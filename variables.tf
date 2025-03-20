@@ -21,3 +21,27 @@ variable "server_ami" {
   type        = string
   default     = "ami-0d5dcd1555c7fb494" # amzn linux 2 arm64
 }
+
+variable "mc_volume_size" {
+  description = "Size of the EBS volume to attach to the EC2 instance"
+  type        = number
+  default     = 10
+}
+
+variable "mc_volume_type" {
+  description = "Type of EBS volume to attach to the EC2 instance"
+  type        = string
+  default     = "gp3"
+}
+
+variable "home_ip" {
+  description = "Public IP of the home network"
+  type        = string
+  default     = "38.70.245.100"
+}
+
+variable "ssh_key" {
+  description = "Path to the SSH key to use for the EC2 instance"
+  type        = string
+  default     = "~/.ssh/id_ed25519.pub"
+}
