@@ -34,3 +34,26 @@ output "lambda_test_command" {
       response.json && cat response.json
   EOT
 }
+
+output "api_gateway_url" {
+  description = "URL of the API Gateway endpoint"
+  value       = "${aws_api_gateway_deployment.api_deployment.invoke_url}/server"
+}
+
+output "api_curl_command" {
+  description = "Curl command to test the API Gateway endpoint"
+  value       = <<-EOT
+    # Test the API Gateway endpoint with curl
+
+    # To test the API Gateway endpoint, run the following command:
+    curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: ${aws_api_gateway_api_key.mc_server_api_key.id}" \
+      -d '{"action": "status"}'
+  EOT
+}
+
+output "api_key" {
+  description = "API key for the API Gateway endpoint"
+  value       = aws_api_gateway_api_key.mc_server_api_key.id
+}
