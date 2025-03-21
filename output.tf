@@ -48,12 +48,13 @@ output "api_curl_command" {
     # To test the API Gateway endpoint, run the following command:
     curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server \
       -H "Content-Type: application/json" \
-      -H "x-api-key: ${aws_api_gateway_api_key.mc_server_api_key.id}" \
+      -H "x-api-key: $(terraform output -raw api_key)" \
       -d '{"action": "status"}'
   EOT
 }
 
 output "api_key" {
   description = "API key for the API Gateway endpoint"
-  value       = aws_api_gateway_api_key.mc_server_api_key.id
+  sensitive = true
+  value       = aws_api_gateway_api_key.mc_server_api_key.value
 }

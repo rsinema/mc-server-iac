@@ -46,6 +46,7 @@ resource "aws_api_gateway_deployment" "api_deployment" {
 resource "aws_api_gateway_usage_plan" "mc_server_usage_plan" {
   name        = "${var.server_name}-usage-plan"
   description = "Usage plan for Minecraft server controller"
+  depends_on = [aws_api_gateway_deployment.api_deployment]
   api_stages {
     api_id = aws_api_gateway_rest_api.mc_server_api.id
     stage  = aws_api_gateway_deployment.api_deployment.stage_name
