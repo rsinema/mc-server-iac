@@ -13,35 +13,53 @@ def lambda_handler(event, context):
     # Extract action from the event - checking multiple formats
     action = None
     
-    # Check if action is directly in the event (direct invocation format)
-    if 'action' in event:
-        action = event.get('action', '').lower()
-        logger.info(f"Found action directly in event: {action}")
-    
-    # If not, check in the body (API Gateway format)
-    elif 'body' in event and event['body']:
-        try:
-            logger.info(f"Checking for action in body: {event['body']}")
-            body = json.loads(event['body'])
-            action = body.get('action', '').lower()
-            logger.info(f"Extracted action from body: {action}")
-        except Exception as e:
-            logger.error(f"Error parsing body JSON: {str(e)}")
-            logger.error(f"Raw body content: {event['body']}")
-            
-    # If action is not found yet, check queryStringParameters
-    if not action and 'queryStringParameters' in event and event['queryStringParameters']:
-        logger.info(f"Checking queryStringParameters: {event['queryStringParameters']}")
-        action = event['queryStringParameters'].get('action', '').lower()
-        if action:
-            logger.info(f"Found action in queryStringParameters: {action}")
+    # First check if this is a new REST endpoint call
+    if 'path' in event:
+        path = event.get('path', '')
+        logger.info(f"Found path in event: {path}")
         
-    # If still no action, check pathParameters
-    if not action and 'pathParameters' in event and event['pathParameters']:
-        logger.info(f"Checking pathParameters: {event['pathParameters']}")
-        action = event['pathParameters'].get('action', '').lower()
-        if action:
-            logger.info(f"Found action in pathParameters: {action}")
+        # Extract action from path
+        if path.endswith('/status'):
+            action = 'status'
+            logger.info("Extracted 'status' action from path")
+        elif path.endswith('/start'):
+            action = 'start'
+            logger.info("Extracted 'start' action from path")
+        elif path.endswith('/stop'):
+            action = 'stop'
+            logger.info("Extracted 'stop' action from path")
+    
+    # If action wasn't found in path, check other locations (for backward compatibility)
+    if not action:
+        # Check if action is directly in the event (direct invocation format)
+        if 'action' in event:
+            action = event.get('action', '').lower()
+            logger.info(f"Found action directly in event: {action}")
+        
+        # If not, check in the body (API Gateway format)
+        elif 'body' in event and event['body']:
+            try:
+                logger.info(f"Checking for action in body: {event['body']}")
+                body = json.loads(event['body'])
+                action = body.get('action', '').lower()
+                logger.info(f"Extracted action from body: {action}")
+            except Exception as e:
+                logger.error(f"Error parsing body JSON: {str(e)}")
+                logger.error(f"Raw body content: {event['body']}")
+                
+        # If action is not found yet, check queryStringParameters
+        if not action and 'queryStringParameters' in event and event['queryStringParameters']:
+            logger.info(f"Checking queryStringParameters: {event['queryStringParameters']}")
+            action = event['queryStringParameters'].get('action', '').lower()
+            if action:
+                logger.info(f"Found action in queryStringParameters: {action}")
+            
+        # If still no action, check pathParameters
+        if not action and 'pathParameters' in event and event['pathParameters']:
+            logger.info(f"Checking pathParameters: {event['pathParameters']}")
+            action = event['pathParameters'].get('action', '').lower()
+            if action:
+                logger.info(f"Found action in pathParameters: {action}")
     
     # Get the instance ID from environment variables
     instance_id = os.environ.get('INSTANCE_ID')

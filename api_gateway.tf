@@ -15,28 +15,119 @@ resource "aws_api_gateway_resource" "mc_server_resource" {
   path_part   = "server"
 }
 
-resource "aws_api_gateway_method" "server_method" {
-  rest_api_id   = aws_api_gateway_rest_api.mc_server_api.id
-  resource_id   = aws_api_gateway_resource.mc_server_resource.id
-  http_method   = "POST"
-  authorization = "NONE"
+resource "aws_api_gateway_resource" "status_resource" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  parent_id   = aws_api_gateway_resource.mc_server_resource.id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_resource" "start_resource" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  parent_id   = aws_api_gateway_resource.mc_server_resource.id
+  path_part   = "start"
+}
+
+resource "aws_api_gateway_resource" "stop_resource" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  parent_id   = aws_api_gateway_resource.mc_server_resource.id
+  path_part   = "stop"
+}
+
+resource "aws_api_gateway_method" "mc_server_status_get" {
+  rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id      = aws_api_gateway_resource.status_resource.id
+  http_method      = "GET"
+  authorization    = "NONE"
   api_key_required = true
 }
 
-resource "aws_api_gateway_integration" "lambda_integration" {
+resource "aws_api_gateway_method" "mc_server_start_post" {
+  rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id      = aws_api_gateway_resource.start_resource.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = true
+}
+
+resource "aws_api_gateway_method" "mc_server_stop_post" {
+  rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id      = aws_api_gateway_resource.stop_resource.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = true
+}
+
+resource "aws_api_gateway_integration" "mc_server_status_integration" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
-  resource_id = aws_api_gateway_resource.mc_server_resource.id
-  http_method = aws_api_gateway_method.server_method.http_method
+  resource_id = aws_api_gateway_resource.status_resource.id
+  http_method = aws_api_gateway_method.mc_server_status_get.http_method
 
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.server_controller.invoke_arn
+
+  request_templates = {
+    "application/json" = jsonencode({
+      action = "status"
+    })
+  }
+}
+
+resource "aws_api_gateway_integration" "mc_server_start_integration" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id = aws_api_gateway_resource.start_resource.id
+  http_method = aws_api_gateway_method.mc_server_start_post.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.server_controller.invoke_arn
+
+  request_templates = {
+    "application/json" = jsonencode({
+      action = "start"
+    })
+  }
+}
+
+resource "aws_api_gateway_integration" "mc_server_stop_integration" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id = aws_api_gateway_resource.stop_resource.id
+  http_method = aws_api_gateway_method.mc_server_stop_post.http_method
+
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.server_controller.invoke_arn
+
+  request_templates = {
+    "application/json" = jsonencode({
+      action = "stop"
+    })
+  }
+
 }
 
 resource "aws_api_gateway_deployment" "api_deployment" {
-  depends_on  = [aws_api_gateway_integration.lambda_integration]
+  depends_on = [
+    aws_api_gateway_integration.mc_server_status_integration,
+    aws_api_gateway_integration.mc_server_start_integration,
+    aws_api_gateway_integration.mc_server_stop_integration
+  ]
+
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
   stage_name  = "prod"
+
+  # This is critical: it ensures a new deployment happens when the API configuration changes
+  triggers = {
+    # Include a hash of the API methods and integrations to force redeployment on changes
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_method.mc_server_status_get,
+      aws_api_gateway_method.mc_server_start_post,
+      aws_api_gateway_method.mc_server_stop_post,
+      aws_api_gateway_integration.mc_server_status_integration,
+      aws_api_gateway_integration.mc_server_start_integration,
+      aws_api_gateway_integration.mc_server_stop_integration,
+    ]))
+  }
 
   lifecycle {
     create_before_destroy = true
@@ -46,7 +137,7 @@ resource "aws_api_gateway_deployment" "api_deployment" {
 resource "aws_api_gateway_usage_plan" "mc_server_usage_plan" {
   name        = "${var.server_name}-usage-plan"
   description = "Usage plan for Minecraft server controller"
-  depends_on = [aws_api_gateway_deployment.api_deployment]
+  depends_on  = [aws_api_gateway_deployment.api_deployment]
   api_stages {
     api_id = aws_api_gateway_rest_api.mc_server_api.id
     stage  = aws_api_gateway_deployment.api_deployment.stage_name

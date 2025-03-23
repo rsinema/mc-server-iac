@@ -40,21 +40,50 @@ output "api_gateway_url" {
   value       = "${aws_api_gateway_deployment.api_deployment.invoke_url}/server"
 }
 
-output "api_curl_command" {
-  description = "Curl command to test the API Gateway endpoint"
+output "api_curl_commands" {
+  description = "Curl commands to test the API Gateway endpoints"
   value       = <<-EOT
-    # Test the API Gateway endpoint with curl
-
-    # To test the API Gateway endpoint, run the following command:
-    curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server \
-      -H "Content-Type: application/json" \
-      -H "x-api-key: $(terraform output -raw api_key)" \
-      -d '{"action": "status"}'
+    # To get your API key, run:
+    # terraform output -raw api_key
+    
+    # To check server status:
+    curl -X GET ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/status \\
+      -H "x-api-key: API_KEY"
+    
+    # To start the server:
+    curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/start \\
+      -H "Content-Type: application/json" \\
+      -H "x-api-key: API_KEY" \\
+      -d '{}'
+    
+    # To stop the server:
+    curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/stop \\
+      -H "Content-Type: application/json" \\
+      -H "x-api-key: API_KEY" \\
+      -d '{}'
   EOT
+}
+
+output "status_curl_command" {
+  description = "Ready-to-use curl command to check server status"
+  sensitive   = true
+  value       = "curl -X GET ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/status -H \"x-api-key: ${aws_api_gateway_api_key.mc_server_api_key.value}\""
+}
+
+output "start_curl_command" {
+  description = "Ready-to-use curl command to start the server"
+  sensitive   = true
+  value       = "curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/start -H \"Content-Type: application/json\" -H \"x-api-key: ${aws_api_gateway_api_key.mc_server_api_key.value}\" -d '{}'"
+}
+
+output "stop_curl_command" {
+  description = "Ready-to-use curl command to stop the server"
+  sensitive   = true
+  value       = "curl -X POST ${aws_api_gateway_deployment.api_deployment.invoke_url}/server/stop -H \"Content-Type: application/json\" -H \"x-api-key: ${aws_api_gateway_api_key.mc_server_api_key.value}\" -d '{}'"
 }
 
 output "api_key" {
   description = "API key for the API Gateway endpoint"
-  sensitive = true
   value       = aws_api_gateway_api_key.mc_server_api_key.value
+  sensitive   = true
 }
