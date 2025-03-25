@@ -10,6 +10,22 @@ logger.setLevel(logging.INFO)
 def lambda_handler(event, context):
     logger.info(f"Event received: {json.dumps(event)}")
     
+    # Define CORS headers
+    cors_headers = {
+        'Access-Control-Allow-Origin': '*',  # Use your specific domain in production
+        'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+        'Access-Control-Allow-Methods': 'GET,OPTIONS,POST'
+    }
+    
+    # Handle preflight OPTIONS request
+    if event.get('httpMethod') == 'OPTIONS':
+        logger.info("Handling OPTIONS preflight request")
+        return {
+            'statusCode': 200,
+            'headers': cors_headers,
+            'body': json.dumps({'message': 'CORS preflight successful'})
+        }
+    
     # Extract action from the event - checking multiple formats
     action = None
     
@@ -70,6 +86,7 @@ def lambda_handler(event, context):
         logger.error("No INSTANCE_ID environment variable set")
         return {
             'statusCode': 400,
+            'headers': cors_headers,
             'body': json.dumps({
                 'message': 'No instance ID configured',
                 'error': 'INSTANCE_ID environment variable not set'
@@ -81,6 +98,7 @@ def lambda_handler(event, context):
         logger.error("No action specified in the request")
         return {
             'statusCode': 400,
+            'headers': cors_headers,
             'body': json.dumps({
                 'message': 'No action specified',
                 'error': 'Please specify an action: start, stop, or status',
@@ -102,6 +120,7 @@ def lambda_handler(event, context):
         logger.error(f"Error getting instance state: {str(e)}")
         return {
             'statusCode': 400,
+            'headers': cors_headers,
             'body': json.dumps({
                 'message': f'Error getting instance state: {str(e)}',
                 'instance_id': instance_id
@@ -148,15 +167,17 @@ def lambda_handler(event, context):
         logger.error(f"Invalid action received: {action}")
         return {
             'statusCode': 400,
+            'headers': cors_headers,
             'body': json.dumps({
                 'message': 'Invalid action. Use "start", "stop", or "status".',
                 'received_action': action
             })
         }
     
-    # Return the response
+    # Return the response with CORS headers
     logger.info(f"Returning result: {json.dumps(result)}")
     return {
         'statusCode': 200,
+        'headers': cors_headers,
         'body': json.dumps(result)
     }
