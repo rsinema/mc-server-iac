@@ -15,6 +15,7 @@ resource "aws_api_gateway_resource" "mc_server_resource" {
   path_part   = "server"
 }
 
+# Create resources for the status, start, and stop endpoints
 resource "aws_api_gateway_resource" "status_resource" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
   parent_id   = aws_api_gateway_resource.mc_server_resource.id
@@ -33,6 +34,8 @@ resource "aws_api_gateway_resource" "stop_resource" {
   path_part   = "stop"
 }
 
+# Methods for the status, start, and stop endpoints
+## Create methods for the status endpoint
 resource "aws_api_gateway_method" "mc_server_status_get" {
   rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
   resource_id      = aws_api_gateway_resource.status_resource.id
@@ -40,6 +43,8 @@ resource "aws_api_gateway_method" "mc_server_status_get" {
   authorization    = "NONE"
   api_key_required = true
 }
+
+## Create methods for the start endpoint
 
 resource "aws_api_gateway_method" "mc_server_start_post" {
   rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
@@ -49,6 +54,8 @@ resource "aws_api_gateway_method" "mc_server_start_post" {
   api_key_required = true
 }
 
+## Create methods for the stop endpoint
+
 resource "aws_api_gateway_method" "mc_server_stop_post" {
   rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
   resource_id      = aws_api_gateway_resource.stop_resource.id
@@ -56,6 +63,9 @@ resource "aws_api_gateway_method" "mc_server_stop_post" {
   authorization    = "NONE"
   api_key_required = true
 }
+
+# Integrations for the status, start, and stop endpoints
+## Create integrations for the status endpoint
 
 resource "aws_api_gateway_integration" "mc_server_status_integration" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
@@ -73,6 +83,8 @@ resource "aws_api_gateway_integration" "mc_server_status_integration" {
   }
 }
 
+## Integrations for the start endpoint
+
 resource "aws_api_gateway_integration" "mc_server_start_integration" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
   resource_id = aws_api_gateway_resource.start_resource.id
@@ -89,6 +101,7 @@ resource "aws_api_gateway_integration" "mc_server_start_integration" {
   }
 }
 
+## Integrations for the stop endpoint
 resource "aws_api_gateway_integration" "mc_server_stop_integration" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
   resource_id = aws_api_gateway_resource.stop_resource.id
@@ -105,6 +118,8 @@ resource "aws_api_gateway_integration" "mc_server_stop_integration" {
   }
 
 }
+
+# Deploy the API
 
 resource "aws_api_gateway_deployment" "api_deployment" {
   depends_on = [
