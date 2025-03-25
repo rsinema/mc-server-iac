@@ -53,7 +53,7 @@ resource "aws_api_gateway_method" "mc_server_status_options" {
 }
 
 ## Create methods for the start endpoint
-## Methods: POST
+## Methods: POST, OPTIONS
 
 resource "aws_api_gateway_method" "mc_server_start_post" {
   rest_api_id      = aws_api_gateway_rest_api.mc_server_api.id
@@ -61,6 +61,13 @@ resource "aws_api_gateway_method" "mc_server_start_post" {
   http_method      = "POST"
   authorization    = "NONE"
   api_key_required = true
+}
+
+resource "aws_api_gateway_method" "mc_server_start_options" {
+  rest_api_id   = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id   = aws_api_gateway_resource.start_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
 }
 
 ## Create methods for the stop endpoint
@@ -115,8 +122,9 @@ resource "aws_api_gateway_integration" "mc_server_status_options_integrations" {
 }
 
 ## Integrations for the start endpoint
+## Integrations: POST -AWS_PROXY-> Lambda, OPTIONS -> Mock
 
-resource "aws_api_gateway_integration" "mc_server_start_integration" {
+resource "aws_api_gateway_integration" "mc_server_start_post_integration" {
   rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
   resource_id = aws_api_gateway_resource.start_resource.id
   http_method = aws_api_gateway_method.mc_server_start_post.http_method
@@ -128,6 +136,19 @@ resource "aws_api_gateway_integration" "mc_server_start_integration" {
   request_templates = {
     "application/json" = jsonencode({
       action = "start"
+    })
+  }
+}
+
+resource "aws_api_gateway_integration" "mc_server_start_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id = aws_api_gateway_resource.start_resource.id
+  http_method = aws_api_gateway_method.mc_server_start_options.http_method
+
+  type = "MOCK"
+  request_templates = {
+    "application/json" = jsonencode({
+      statusCode = 200
     })
   }
 }
@@ -181,8 +202,20 @@ resource "aws_api_gateway_method_response" "mc_server_status_options_200" {
 }
 
 ## Method responses for the start endpoint
-## Method responses: POST -> 200
-### TODO: Add method responses for the start endpoint
+## Method responses: OPTIONS -> 200, POST gets handled by the Lambda function
+
+resource "aws_api_gateway_method_response" "mc_server_start_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id = aws_api_gateway_resource.start_resource.id
+  http_method = aws_api_gateway_method.mc_server_start_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
 
 ## Method responses for the stop endpoint
 ## Method responses: OPTIONS -> 200, POST gets handled by the Lambda function
@@ -218,8 +251,20 @@ resource "aws_api_gateway_integration_response" "mc_server_status_options_integr
 }
 
 ## Integration responses for the start endpoint
-## Integration responses: POST -> 200
-### TODO: Add integration responses for the start endpoint
+## Integration responses: OPTIONS -> CORS headers, POST is handled by the Lambda function
+
+resource "aws_api_gateway_integration_response" "mc_server_start_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.mc_server_api.id
+  resource_id = aws_api_gateway_resource.start_resource.id
+  http_method = aws_api_gateway_method.mc_server_start_options.http_method
+  status_code = aws_api_gateway_method_response.mc_server_start_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'" # Allow any origin - you can restrict this to your specific domain
+  }
+}
 
 ## Integration responses for the stop endpoint
 ## Integration responses: OPTIONS -> CORS headers, POST is handled by the Lambda function
@@ -243,7 +288,7 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   depends_on = [
     aws_api_gateway_integration.mc_server_status_get_integration,
     aws_api_gateway_integration.mc_server_status_options_integrations,
-    aws_api_gateway_integration.mc_server_start_integration,
+    aws_api_gateway_integration.mc_server_start_post_integration,
     aws_api_gateway_integration.mc_server_stop_post_integration
   ]
 
@@ -259,7 +304,8 @@ resource "aws_api_gateway_deployment" "api_deployment" {
       aws_api_gateway_method.mc_server_stop_post,
       aws_api_gateway_integration.mc_server_status_get_integration,
       aws_api_gateway_integration.mc_server_status_options_integrations,
-      aws_api_gateway_integration.mc_server_start_integration,
+      aws_api_gateway_integration.mc_server_start_post_integration,
+      aws_api_gateway_integration.mc_server_start_options_integration,
       aws_api_gateway_integration.mc_server_stop_post_integration,
       aws_api_gateway_integration.mc_server_stop_options_integration,
     ]))
