@@ -130,7 +130,8 @@ def lambda_handler(event, context):
     # Prepare the result dictionary
     result = {
         'instance_id': instance_id,
-        'previous_state': current_state
+        'previous_state': current_state,
+        "public_ip": None
     }
     
     # Process the action
@@ -142,6 +143,11 @@ def lambda_handler(event, context):
             ec2.start_instances(InstanceIds=[instance_id])
             result['message'] = 'Server is starting'
             result['action_taken'] = 'start'
+
+            # get the public IP address
+            response = ec2.describe_instances(InstanceIds=[instance_id])
+            public_ip = response['Reservations'][0]['Instances'][0]['PublicIpAddress']
+            result['public_ip'] = public_ip
         else:
             logger.info(f"No action taken. Instance is already in {current_state} state")
             result['message'] = f'Server is already in {current_state} state'
@@ -162,6 +168,12 @@ def lambda_handler(event, context):
         logger.info(f"Status check: instance {instance_id} is {current_state}")
         result['message'] = f'Server is in {current_state} state'
         result['action_taken'] = 'status_check'
+
+        if current_state == 'running':
+            # get the public IP address
+            response = ec2.describe_instances(InstanceIds=[instance_id])
+            public_ip = response['Reservations'][0]['Instances'][0]['PublicIpAddress']
+            result['public_ip'] = public_ip
     
     else:
         logger.error(f"Invalid action received: {action}")
