@@ -6,6 +6,7 @@ resource "aws_api_gateway_rest_api" "mc_server_api" {
 resource "aws_api_gateway_api_key" "mc_server_api_key" {
   name        = "${var.server_name}-api-key"
   description = "API key for Minecraft server controller"
+  value       = var.api_key
 }
 
 

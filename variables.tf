@@ -45,3 +45,9 @@ variable "ssh_key" {
   type        = string
   default     = "~/.ssh/id_ed25519.pub"
 }
+
+variable "api_key" {
+  description = "API key for the MC server"
+  type        = string
+  default = "c77354f0-313a-4114-8baa-6fbfc6891247"
+}
