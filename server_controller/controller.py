@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 import logging
+import time
 
 # Set up logging
 logger = logging.getLogger()
@@ -116,6 +117,15 @@ def lambda_handler(event, context):
         response = ec2.describe_instances(InstanceIds=[instance_id])
         current_state = response['Reservations'][0]['Instances'][0]['State']['Name']
         logger.info(f"Current instance state: {current_state}")
+        
+        # Get the public IP if available
+        public_ip = None
+        if current_state == 'running':
+            try:
+                public_ip = response['Reservations'][0]['Instances'][0].get('PublicIpAddress')
+                logger.info(f"Found public IP: {public_ip}")
+            except (KeyError, IndexError) as e:
+                logger.warning(f"Could not retrieve public IP: {str(e)}")
     except Exception as e:
         logger.error(f"Error getting instance state: {str(e)}")
         return {
@@ -131,7 +141,7 @@ def lambda_handler(event, context):
     result = {
         'instance_id': instance_id,
         'previous_state': current_state,
-        "public_ip": None
+        'public_ip': public_ip if 'public_ip' in locals() and public_ip else None
     }
     
     # Process the action
@@ -143,15 +153,19 @@ def lambda_handler(event, context):
             ec2.start_instances(InstanceIds=[instance_id])
             result['message'] = 'Server is starting'
             result['action_taken'] = 'start'
-
-            # get the public IP address
-            response = ec2.describe_instances(InstanceIds=[instance_id])
-            public_ip = response['Reservations'][0]['Instances'][0]['PublicIpAddress']
-            result['public_ip'] = public_ip
+            
+            # We can't get the IP immediately after starting the instance
+            # It will be null until the instance is fully running
+            result['public_ip'] = None
+            result['ip_status'] = 'pending' 
         else:
             logger.info(f"No action taken. Instance is already in {current_state} state")
             result['message'] = f'Server is already in {current_state} state'
             result['action_taken'] = 'none'
+            
+            # If it's already running, make sure we include the public IP
+            if current_state == 'running' and 'public_ip' in locals() and public_ip:
+                result['public_ip'] = public_ip
     
     elif action == 'stop':
         if current_state == 'running':
@@ -170,10 +184,8 @@ def lambda_handler(event, context):
         result['action_taken'] = 'status_check'
 
         if current_state == 'running':
-            # get the public IP address
-            response = ec2.describe_instances(InstanceIds=[instance_id])
-            public_ip = response['Reservations'][0]['Instances'][0]['PublicIpAddress']
-            result['public_ip'] = public_ip
+            # The public IP should already be set from earlier
+            logger.info(f"Status check - including public IP: {result.get('public_ip')}")
     
     else:
         logger.error(f"Invalid action received: {action}")
