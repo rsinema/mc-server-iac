@@ -327,7 +327,7 @@ resource "aws_api_gateway_usage_plan" "mc_server_usage_plan" {
   }
 
   quota_settings {
-    limit  = 100
+    limit  = 1000
     period = "DAY"
   }
 
