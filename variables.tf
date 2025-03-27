@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "instance_type" {
   description = "Type of EC2 instance to launch"
   type        = string
-  default     = "t4g.small" # arm64 compatible - 2 vCPUs, 2GB mem, 0.0168 USD/hr
+  default     = "t4g.large" # arm64 compatible - 2 vCPUs, 8GB mem, 0.067 USD/hr
 }
 
 variable "server_name" {
@@ -49,5 +49,5 @@ variable "ssh_key" {
 variable "api_key" {
   description = "API key for the MC server"
   type        = string
-  default = "c77354f0-313a-4114-8baa-6fbfc6891247"
+  default     = "c77354f0-313a-4114-8baa-6fbfc6891247"
 }
