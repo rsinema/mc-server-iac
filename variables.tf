@@ -51,3 +51,21 @@ variable "api_key" {
   type        = string
   default     = "c77354f0-313a-4114-8baa-6fbfc6891247"
 }
+
+variable "minecraft_version" {
+  description = "Version of Minecraft server to install"
+  type        = string
+  default     = "1.21.5" # Current stable version as of March 2025
+}
+
+variable "minecraft_download_url" {
+  description = "URL to download Minecraft server JAR"
+  type        = string
+  default     = "https://piston-data.mojang.com/v1/objects/8f3112a1049751cc472ec13e397eade5336ca7ae/server.jar"
+}
+
+variable "minecraft_memory" {
+  description = "Memory allocation for Minecraft server (in GB)"
+  type        = number
+  default     = 6
+}

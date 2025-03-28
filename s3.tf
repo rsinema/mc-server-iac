@@ -4,8 +4,4 @@ bucket = lower("rsinema-${var.server_name}-backup")
   tags = {
     Name = "${var.server_name}-backup"
   }
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
