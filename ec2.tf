@@ -10,8 +10,10 @@ resource "aws_instance" "mc_server" {
 
   key_name = aws_key_pair.mc_server_key.key_name
 
-  user_data = "ls -la"
-  # user_data = file("user_data.sh")
+  # User data template to install and configure the Minecraft server
+  user_data = templatefile("${path.module}/server_setup.sh.tpl", {
+    minecraft_download_url = var.minecraft_download_url
+  })
 
   tags = {
     Name = var.server_name
