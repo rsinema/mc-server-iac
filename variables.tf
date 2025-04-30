@@ -37,7 +37,7 @@ variable "mc_volume_type" {
 variable "home_ip" {
   description = "Public IP of the home network"
   type        = string
-  default     = "38.70.245.100"
+  default     = "0.0.0.0" # placeholder ip
 }
 
 variable "ssh_key" {
