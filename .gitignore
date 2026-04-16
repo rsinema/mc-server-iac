@@ -28,6 +28,7 @@ terraform.rc
 
 # Ignore local environment files
 .env
+.envrc
 *.pem
 
 payload.json

@@ -3,205 +3,337 @@ import boto3
 import os
 import logging
 import time
+import urllib.request
 
-# Set up logging
+import nacl.signing
+import nacl.exceptions
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-def lambda_handler(event, context):
-    logger.info(f"Event received: {json.dumps(event)}")
-    
-    # Define CORS headers
-    cors_headers = {
-        'Access-Control-Allow-Origin': '*',  # Use your specific domain in production
-        'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
-        'Access-Control-Allow-Methods': 'GET,OPTIONS,POST'
-    }
-    
-    # Handle preflight OPTIONS request
-    if event.get('httpMethod') == 'OPTIONS':
-        logger.info("Handling OPTIONS preflight request")
-        return {
-            'statusCode': 200,
-            'headers': cors_headers,
-            'body': json.dumps({'message': 'CORS preflight successful'})
-        }
-    
-    # Extract action from the event - checking multiple formats
-    action = None
-    
-    # First check if this is a new REST endpoint call
-    if 'path' in event:
-        path = event.get('path', '')
-        logger.info(f"Found path in event: {path}")
-        
-        # Extract action from path
-        if path.endswith('/status'):
-            action = 'status'
-            logger.info("Extracted 'status' action from path")
-        elif path.endswith('/start'):
-            action = 'start'
-            logger.info("Extracted 'start' action from path")
-        elif path.endswith('/stop'):
-            action = 'stop'
-            logger.info("Extracted 'stop' action from path")
-    
-    # If action wasn't found in path, check other locations (for backward compatibility)
-    if not action:
-        # Check if action is directly in the event (direct invocation format)
-        if 'action' in event:
-            action = event.get('action', '').lower()
-            logger.info(f"Found action directly in event: {action}")
-        
-        # If not, check in the body (API Gateway format)
-        elif 'body' in event and event['body']:
-            try:
-                logger.info(f"Checking for action in body: {event['body']}")
-                body = json.loads(event['body'])
-                action = body.get('action', '').lower()
-                logger.info(f"Extracted action from body: {action}")
-            except Exception as e:
-                logger.error(f"Error parsing body JSON: {str(e)}")
-                logger.error(f"Raw body content: {event['body']}")
-                
-        # If action is not found yet, check queryStringParameters
-        if not action and 'queryStringParameters' in event and event['queryStringParameters']:
-            logger.info(f"Checking queryStringParameters: {event['queryStringParameters']}")
-            action = event['queryStringParameters'].get('action', '').lower()
-            if action:
-                logger.info(f"Found action in queryStringParameters: {action}")
-            
-        # If still no action, check pathParameters
-        if not action and 'pathParameters' in event and event['pathParameters']:
-            logger.info(f"Checking pathParameters: {event['pathParameters']}")
-            action = event['pathParameters'].get('action', '').lower()
-            if action:
-                logger.info(f"Found action in pathParameters: {action}")
-    
-    # Get the instance ID from environment variables
-    instance_id = os.environ.get('INSTANCE_ID')
-    logger.info(f"Instance ID from environment: {instance_id}")
-    
-    # If no instance ID is set, return an error
-    if not instance_id:
-        logger.error("No INSTANCE_ID environment variable set")
-        return {
-            'statusCode': 400,
-            'headers': cors_headers,
-            'body': json.dumps({
-                'message': 'No instance ID configured',
-                'error': 'INSTANCE_ID environment variable not set'
-            })
-        }
-    
-    # If no action was found, return an error
-    if not action:
-        logger.error("No action specified in the request")
-        return {
-            'statusCode': 400,
-            'headers': cors_headers,
-            'body': json.dumps({
-                'message': 'No action specified',
-                'error': 'Please specify an action: start, stop, or status',
-                'event': event  # Include the event for debugging
-            })
-        }
-    
-    # Initialize the EC2 client
-    logger.info("Initializing EC2 client")
-    ec2 = boto3.client('ec2')
-    
-    # Get the current state of the instance
-    try:
-        logger.info(f"Getting current state for instance {instance_id}")
-        response = ec2.describe_instances(InstanceIds=[instance_id])
-        current_state = response['Reservations'][0]['Instances'][0]['State']['Name']
-        logger.info(f"Current instance state: {current_state}")
-        
-        # Get the public IP if available
-        public_ip = None
-        if current_state == 'running':
-            try:
-                public_ip = response['Reservations'][0]['Instances'][0].get('PublicIpAddress')
-                logger.info(f"Found public IP: {public_ip}")
-            except (KeyError, IndexError) as e:
-                logger.warning(f"Could not retrieve public IP: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error getting instance state: {str(e)}")
-        return {
-            'statusCode': 400,
-            'headers': cors_headers,
-            'body': json.dumps({
-                'message': f'Error getting instance state: {str(e)}',
-                'instance_id': instance_id
-            })
-        }
-    
-    # Prepare the result dictionary
-    result = {
-        'instance_id': instance_id,
-        'previous_state': current_state,
-        'public_ip': public_ip if 'public_ip' in locals() and public_ip else None
-    }
-    
-    # Process the action
-    logger.info(f"Processing action: {action}")
-    
-    if action == 'start':
-        if current_state == 'stopped':
-            logger.info(f"Starting instance {instance_id}")
-            ec2.start_instances(InstanceIds=[instance_id])
-            result['message'] = 'Server is starting'
-            result['action_taken'] = 'start'
-            
-            # We can't get the IP immediately after starting the instance
-            # It will be null until the instance is fully running
-            result['public_ip'] = None
-            result['ip_status'] = 'pending' 
-        else:
-            logger.info(f"No action taken. Instance is already in {current_state} state")
-            result['message'] = f'Server is already in {current_state} state'
-            result['action_taken'] = 'none'
-            
-            # If it's already running, make sure we include the public IP
-            if current_state == 'running' and 'public_ip' in locals() and public_ip:
-                result['public_ip'] = public_ip
-    
-    elif action == 'stop':
-        if current_state == 'running':
-            logger.info(f"Stopping instance {instance_id}")
-            ec2.stop_instances(InstanceIds=[instance_id])
-            result['message'] = 'Server is stopping'
-            result['action_taken'] = 'stop'
-        else:
-            logger.info(f"No action taken. Instance is already in {current_state} state")
-            result['message'] = f'Server is already in {current_state} state'
-            result['action_taken'] = 'none'
-    
-    elif action == 'status':
-        logger.info(f"Status check: instance {instance_id} is {current_state}")
-        result['message'] = f'Server is in {current_state} state'
-        result['action_taken'] = 'status_check'
 
-        if current_state == 'running':
-            # The public IP should already be set from earlier
-            logger.info(f"Status check - including public IP: {result.get('public_ip')}")
-    
-    else:
-        logger.error(f"Invalid action received: {action}")
-        return {
-            'statusCode': 400,
-            'headers': cors_headers,
-            'body': json.dumps({
-                'message': 'Invalid action. Use "start", "stop", or "status".',
-                'received_action': action
-            })
-        }
-    
-    # Return the response with CORS headers
-    logger.info(f"Returning result: {json.dumps(result)}")
+# ---------------------------------------------------------------------------
+# Discord Ed25519 signature verification
+# ---------------------------------------------------------------------------
+
+def verify_discord_signature(body_bytes: bytes, signature: str, timestamp: str, public_key_hex: str) -> bool:
+    """Verify the Ed25519 signature on a Discord interaction request."""
+    try:
+        public_key = nacl.signing.VerifyKey(bytes.fromhex(public_key_hex))
+        message = timestamp.encode() + body_bytes
+        public_key.verify(message, signature=bytes.fromhex(signature))
+        return True
+    except (nacl.exceptions.BadSignatureError, ValueError):
+        return False
+
+
+def get_discord_public_key(secret_arn: str) -> str:
+    """Fetch the Discord public key from Secrets Manager."""
+    secrets = boto3.client("secretsmanager")
+    resp = secrets.get_secret_value(SecretId=secret_arn)
+    raw = resp["SecretString"]
+    parsed = json.loads(raw)
+    return parsed["public_key"]
+
+
+# ---------------------------------------------------------------------------
+# EC2 helpers
+# ---------------------------------------------------------------------------
+
+def get_instance_state(instance_id: str) -> str:
+    ec2 = boto3.client("ec2")
+    resp = ec2.describe_instances(InstanceIds=[instance_id])
+    return resp["Reservations"][0]["Instances"][0]["State"]["Name"]
+
+
+def get_instance_public_ip(instance_id: str) -> str | None:
+    ec2 = boto3.client("ec2")
+    resp = ec2.describe_instances(InstanceIds=[instance_id])
+    return resp["Reservations"][0]["Instances"][0].get("PublicIpAddress")
+
+
+# ---------------------------------------------------------------------------
+# RCON helpers (via itzg/minecraft-server container rcon-cli)
+# ---------------------------------------------------------------------------
+
+def get_rcon_password(secret_arn: str) -> str:
+    secrets = boto3.client("secretsmanager")
+    return secrets.get_secret_value(SecretId=secret_arn)["SecretString"]
+
+
+def rcon_command(command: str, rcon_password: str, host: str = "localhost", port: int = 25575) -> str:
+    """Send an RCON command to the Minecraft server via the Source RCON protocol."""
+    import socket
+    import struct
+
+    def _build_packet(request_id: int, packet_type: int, payload: str) -> bytes:
+        body = payload.encode("utf-8") + b"\x00\x00"  # null-terminated + padding
+        return struct.pack("<iii", len(body) + 8, request_id, packet_type) + body
+
+    def _recv_packet(s) -> bytes:
+        raw_len = b""
+        while len(raw_len) < 4:
+            chunk = s.recv(4 - len(raw_len))
+            if not chunk:
+                return b""
+            raw_len += chunk
+        (length,) = struct.unpack("<i", raw_len)
+        data = b""
+        while len(data) < length:
+            chunk = s.recv(length - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    try:
+        sock.connect((host, port))
+
+        # Authenticate (type 3 = SERVERDATA_AUTH)
+        sock.sendall(_build_packet(1, 3, rcon_password))
+        _recv_packet(sock)
+
+        # Send command (type 2 = SERVERDATA_EXECCOMMAND)
+        sock.sendall(_build_packet(2, 2, command))
+        response = _recv_packet(sock)
+    finally:
+        sock.close()
+
+    if len(response) < 8:
+        return ""
+    # Response body starts after request_id (4) + type (4), strip trailing nulls
+    return response[8:].rstrip(b"\x00").decode("utf-8", errors="replace")
+
+
+def get_player_count(rcon_password: str, rcon_host: str = None) -> int:
+    """Get the current player count via RCON."""
+    try:
+        output = rcon_command("list", rcon_password, host=rcon_host or get_instance_public_ip(os.environ["INSTANCE_ID"]) or "localhost")
+        # Output format: "There are 0/20 players online:" or "Connected players: ..."
+        if "players online" in output.lower():
+            parts = output.split()
+            for i, p in enumerate(parts):
+                if p in ("players", "player") and i > 0:
+                    num = parts[i - 1].replace(",", "").split("/")[0]
+                    return int(num)
+        elif "connected" in output.lower():
+            lines = output.split("\n")
+            for line in lines[1:]:
+                if line.strip():
+                    return len([x for x in line.split() if x.strip()])
+        return 0
+    except Exception as e:
+        logger.warning(f"RCON failed: {e}")
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Discord interaction helpers
+# ---------------------------------------------------------------------------
+
+def discord_response(content: str, ephemeral: bool = True) -> dict:
+    """Build a Discord interaction response payload."""
     return {
-        'statusCode': 200,
-        'headers': cors_headers,
-        'body': json.dumps(result)
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({
+            "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+            "data": {
+                "content": content,
+                "flags": 64 if ephemeral else 0  # EPHEMERAL
+            }
+        })
     }
+
+
+def discord_webhook_notify(webhook_url: str, message: str):
+    """Send a message via Discord webhook (for idle-stop notification)."""
+    if not webhook_url:
+        return
+    try:
+        data = json.dumps({"content": message}).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except Exception as e:
+        logger.error(f"Discord webhook failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Action handlers
+# ---------------------------------------------------------------------------
+
+def handle_start(instance_id: str, rcon_password: str) -> dict:
+    state = get_instance_state(instance_id)
+    if state == "running":
+        ip = get_instance_public_ip(instance_id)
+        return discord_response(f"Server is already running at `{ip}:25565`.")
+
+    ec2 = boto3.client("ec2")
+    ec2.start_instances(InstanceIds=[instance_id])
+
+    # Poll until running (up to 2 minutes)
+    for _ in range(24):
+        time.sleep(5)
+        state = get_instance_state(instance_id)
+        if state == "running":
+            ip = get_instance_public_ip(instance_id)
+            return discord_response(f"Server is up at `{ip}:25565`! Give it ~30s for Minecraft to fully start.")
+
+    return discord_response("Server is starting but is taking longer than expected. Check again in a minute.")
+
+
+def handle_stop(instance_id: str) -> dict:
+    state = get_instance_state(instance_id)
+    if state == "stopped":
+        return discord_response("Server is already stopped.")
+
+    ec2 = boto3.client("ec2")
+    ec2.stop_instances(InstanceIds=[instance_id])
+    return discord_response("Server is stopping. See you next time!")
+
+
+def handle_status(instance_id: str, rcon_password: str) -> dict:
+    state = get_instance_state(instance_id)
+    if state == "stopped":
+        return discord_response("Server is stopped. Use `/mc start` to spin it up.")
+
+    ip = get_instance_public_ip(instance_id) or "pending"
+    players = get_player_count(rcon_password, rcon_host=ip) if state == "running" else 0
+    return discord_response(
+        f"Server is running at `{ip}:25565`\n"
+        f"Players online: {players}"
+    )
+
+
+def handle_players(instance_id: str, rcon_password: str) -> dict:
+    state = get_instance_state(instance_id)
+    if state != "running":
+        return discord_response("Server is not running. Use `/mc start` first.")
+
+    ip = get_instance_public_ip(instance_id) or "localhost"
+    try:
+        output = rcon_command("list", rcon_password, host=ip)
+        return discord_response(f"```\n{output}\n```", ephemeral=False)
+    except Exception as e:
+        return discord_response(f"Could not fetch player list: {e}")
+
+
+# ---------------------------------------------------------------------------
+# EventBridge / direct invocation handler (idle-stop trigger)
+# ---------------------------------------------------------------------------
+
+def handle_stop_action(instance_id: str, webhook_url: str = None) -> dict:
+    state = get_instance_state(instance_id)
+    if state != "running":
+        logger.info(f"Instance {instance_id} already {state}, nothing to stop")
+        return {"statusCode": 200, "body": json.dumps({"skipped": True, "state": state})}
+
+    ec2 = boto3.client("ec2")
+    ec2.stop_instances(InstanceIds=[instance_id])
+    logger.info(f"Instance {instance_id} stopped by idle-stop trigger")
+
+    if webhook_url:
+        discord_webhook_notify(
+            webhook_url,
+            "Server stopped — idle for 15 minutes. Use `/mc start` to resume."
+        )
+
+    return {"statusCode": 200, "body": json.dumps({"stopped": True, "instance_id": instance_id})}
+
+
+# ---------------------------------------------------------------------------
+# Main Lambda handler
+# ---------------------------------------------------------------------------
+
+def lambda_handler(event, context):
+    logger.info(f"Event: {json.dumps(event)}")
+
+    instance_id = os.environ.get("INSTANCE_ID")
+    discord_signing_key_arn = os.environ.get("DISCORD_SIGNING_KEY_SECRET_ARN")
+    rcon_password_arn = os.environ.get("RCON_PASSWORD_SECRET_ARN")
+    discord_webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+    # -------------------------------------------------------------------------
+    # Route: EventBridge direct invocation (idle-stop)
+    # -------------------------------------------------------------------------
+    if event.get("action") == "stop":
+        logger.info("Handling idle-stop action from EventBridge")
+        return handle_stop_action(instance_id, discord_webhook_url)
+
+    # -------------------------------------------------------------------------
+    # Route: Discord interaction via Function URL
+    # -------------------------------------------------------------------------
+    headers = event.get("headers", {})
+    signature = headers.get("x-signature-ed25519", "")
+    timestamp = headers.get("x-signature-timestamp", "")
+
+    body_bytes = event.get("body", "").encode() if isinstance(event.get("body"), str) else event.get("body", b"")
+    if isinstance(body_bytes, str):
+        body_bytes = body_bytes.encode()
+
+    # Verify Discord signature — reject requests with missing headers
+    if not signature or not timestamp:
+        logger.error("Missing Discord signature headers")
+        return {"statusCode": 401, "body": json.dumps({"error": "Missing signature"})}
+
+    try:
+        public_key_hex = get_discord_public_key(discord_signing_key_arn)
+    except Exception as e:
+        logger.error(f"Failed to fetch Discord public key: {e}")
+        return {"statusCode": 500, "body": json.dumps({"error": "Failed to verify interaction"})}
+
+    if not verify_discord_signature(body_bytes, signature, timestamp, public_key_hex):
+        logger.error("Invalid Discord signature")
+        return {"statusCode": 401, "body": json.dumps({"error": "Invalid signature"})}
+
+    # Parse interaction payload
+    try:
+        payload = json.loads(body_bytes) if body_bytes else {}
+    except Exception:
+        payload = {}
+
+    # Handle Discord ping (required for slash command registration)
+    if payload.get("type") == 1:
+        return {"statusCode": 200, "body": json.dumps({"type": 1})}
+
+    # Extract command name and options
+    command_name = (
+        payload.get("data", {})
+        .get("name", "")
+    )
+    options = {
+        o["name"]: o.get("value")
+        for o in payload.get("data", {}).get("options", [])
+    }
+
+    rcon_pw = get_rcon_password(rcon_password_arn) if rcon_password_arn else ""
+
+    logger.info(f"Routing command: {command_name} options={options}")
+
+    if command_name == "mc":
+        sub = options.get("sub") or options.get("action", "status")
+        if sub == "start":
+            return handle_start(instance_id, rcon_pw)
+        elif sub == "stop":
+            return handle_stop(instance_id)
+        elif sub == "status":
+            return handle_status(instance_id, rcon_pw)
+        elif sub == "players":
+            return handle_players(instance_id, rcon_pw)
+        else:
+            return discord_response(f"Unknown subcommand: `{sub}`. Use `/mc start|stop|status|players`.")
+
+    # Generic action routes (backward compat with event['action'])
+    action = event.get("action") or options.get("action")
+    if action in ("start", "stop", "status"):
+        return discord_response(f"Use `/mc {action}` instead.")
+
+    return discord_response("Unknown interaction type.")
