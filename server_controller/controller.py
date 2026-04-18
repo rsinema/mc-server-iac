@@ -2,6 +2,7 @@ import json
 import boto3
 import os
 import logging
+import re
 import time
 import urllib.request
 
@@ -50,6 +51,17 @@ def get_instance_public_ip(instance_id: str) -> str | None:
     ec2 = boto3.client("ec2")
     resp = ec2.describe_instances(InstanceIds=[instance_id])
     return resp["Reservations"][0]["Instances"][0].get("PublicIpAddress")
+
+
+def reset_idle_alarm(alarm_name: str) -> None:
+    # Without this reset, the alarm stays in ALARM from the prior stop cycle,
+    # so the next OK→ALARM transition never fires and auto-stop silently breaks.
+    cloudwatch = boto3.client("cloudwatch")
+    cloudwatch.set_alarm_state(
+        AlarmName=alarm_name,
+        StateValue="OK",
+        StateReason="Reset by /mc start to re-arm idle-stop",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,19 +123,9 @@ def get_player_count(rcon_password: str, rcon_host: str = None) -> int:
     """Get the current player count via RCON."""
     try:
         output = rcon_command("list", rcon_password, host=rcon_host or get_instance_public_ip(os.environ["INSTANCE_ID"]) or "localhost")
-        # Output format: "There are 0/20 players online:" or "Connected players: ..."
-        if "players online" in output.lower():
-            parts = output.split()
-            for i, p in enumerate(parts):
-                if p in ("players", "player") and i > 0:
-                    num = parts[i - 1].replace(",", "").split("/")[0]
-                    return int(num)
-        elif "connected" in output.lower():
-            lines = output.split("\n")
-            for line in lines[1:]:
-                if line.strip():
-                    return len([x for x in line.split() if x.strip()])
-        return 0
+        # PaperMC: "There are <N> of a max of <M> players online: <names>"
+        match = re.search(r"There are (\d+)", output)
+        return int(match.group(1)) if match else 0
     except Exception as e:
         logger.warning(f"RCON failed: {e}")
         return 0
@@ -178,6 +180,13 @@ def handle_start(instance_id: str, rcon_password: str) -> dict:
 
     ec2 = boto3.client("ec2")
     ec2.start_instances(InstanceIds=[instance_id])
+
+    alarm_name = os.environ.get("IDLE_STOP_ALARM_NAME")
+    if alarm_name:
+        try:
+            reset_idle_alarm(alarm_name)
+        except Exception as e:
+            logger.warning(f"Failed to reset idle-stop alarm: {e}")
 
     # Poll until running (up to 2 minutes)
     for _ in range(24):
@@ -249,6 +258,32 @@ def handle_stop_action(instance_id: str, webhook_url: str = None) -> dict:
     return {"statusCode": 200, "body": json.dumps({"stopped": True, "instance_id": instance_id})}
 
 
+def handle_start_action(instance_id: str) -> dict:
+    state = get_instance_state(instance_id)
+    if state == "running":
+        logger.info(f"Instance {instance_id} already running")
+        return {"statusCode": 200, "body": json.dumps({"skipped": True, "state": state})}
+
+    ec2 = boto3.client("ec2")
+    ec2.start_instances(InstanceIds=[instance_id])
+    logger.info(f"Instance {instance_id} started by direct action")
+
+    alarm_reset = False
+    alarm_name = os.environ.get("IDLE_STOP_ALARM_NAME")
+    if alarm_name:
+        try:
+            reset_idle_alarm(alarm_name)
+            alarm_reset = True
+        except Exception as e:
+            logger.warning(f"Failed to reset idle-stop alarm: {e}")
+
+    return {"statusCode": 200, "body": json.dumps({
+        "started": True,
+        "instance_id": instance_id,
+        "alarm_reset": alarm_reset,
+    })}
+
+
 # ---------------------------------------------------------------------------
 # Main Lambda handler
 # ---------------------------------------------------------------------------
@@ -262,11 +297,15 @@ def lambda_handler(event, context):
     discord_webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
     # -------------------------------------------------------------------------
-    # Route: EventBridge direct invocation (idle-stop)
+    # Route: EventBridge / direct invocation
     # -------------------------------------------------------------------------
     if event.get("action") == "stop":
         logger.info("Handling idle-stop action from EventBridge")
         return handle_stop_action(instance_id, discord_webhook_url)
+
+    if event.get("action") == "start":
+        logger.info("Handling direct start action")
+        return handle_start_action(instance_id)
 
     # -------------------------------------------------------------------------
     # Route: Discord interaction via Function URL

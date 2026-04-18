@@ -24,3 +24,8 @@ variable "discord_webhook_url" {
   default     = ""
   sensitive   = true
 }
+
+variable "idle_stop_alarm_name" {
+  description = "Name of the CloudWatch idle-stop alarm that Lambda resets to OK on /mc start"
+  type        = string
+}

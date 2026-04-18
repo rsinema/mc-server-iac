@@ -87,6 +87,7 @@ module "control" {
   discord_signing_key_secret_arn = aws_secretsmanager_secret.discord_signing_key.arn
   rcon_password_secret_arn       = aws_secretsmanager_secret.rcon_password.arn
   discord_webhook_url            = var.discord_webhook_url
+  idle_stop_alarm_name           = "${var.server_name}-idle-stop"
 }
 
 # DNS module

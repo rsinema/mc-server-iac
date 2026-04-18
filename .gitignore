@@ -33,3 +33,4 @@ terraform.rc
 
 payload.json
 lambdas/
+.secrets

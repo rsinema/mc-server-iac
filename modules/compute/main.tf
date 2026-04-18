@@ -91,6 +91,7 @@ resource "aws_instance" "mc_server" {
     minecraft_memory  = var.minecraft_memory
     rcon_password     = var.rcon_password
   })
+  user_data_replace_on_change = true
 
   tags = {
     Name    = var.server_name
@@ -98,7 +99,7 @@ resource "aws_instance" "mc_server" {
   }
 
   root_block_device {
-    volume_size = 8
+    volume_size = 30
     volume_type = "gp3"
     tags = {
       Name    = "${var.server_name}-root"

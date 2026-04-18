@@ -49,6 +49,14 @@ resource "aws_iam_policy" "controller_lambda" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        Sid    = "CloudWatchAlarmReset"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:SetAlarmState"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -79,6 +87,7 @@ resource "aws_lambda_function" "server_controller" {
       DISCORD_SIGNING_KEY_SECRET_ARN = var.discord_signing_key_secret_arn
       RCON_PASSWORD_SECRET_ARN       = var.rcon_password_secret_arn
       DISCORD_WEBHOOK_URL            = var.discord_webhook_url
+      IDLE_STOP_ALARM_NAME           = var.idle_stop_alarm_name
     }
   }
 }
@@ -90,7 +99,7 @@ resource "aws_lambda_function_url" "server_controller" {
   cors {
     allow_credentials = false
     allow_origins     = ["*"]
-    allow_methods     = ["POST", "OPTIONS"]
+    allow_methods     = ["POST"]
     allow_headers     = ["x-signature-ed25519", "x-signature-timestamp", "content-type"]
     expose_headers    = []
     max_age           = 0

@@ -7,7 +7,7 @@ resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   period              = 60
   statistic           = "Maximum"
   threshold           = 1
-  treat_missing_data  = "breaching"
+  treat_missing_data  = "notBreaching"
   alarm_description   = "Triggers when PlayerCount is 0 for ${var.idle_stop_minutes} consecutive minutes"
 
   dimensions = {

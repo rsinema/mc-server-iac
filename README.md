@@ -8,6 +8,8 @@ Infrastructure-as-Code for a shared Minecraft server on AWS EC2, controlled via 
 
 ## Architecture
 
+![](mermaid-diagram-2026-04-17-203958.png)
+
 ```mermaid
 flowchart LR
     subgraph AWS["AWS (us-west-2)"]
@@ -63,7 +65,9 @@ flowchart LR
 ### Prerequisites
 
 - [OpenTofu](https://opentofu.org/) ≥ 1.8
+- Python 3.11 and `pip` (used to build Lambda dependencies as Linux arm64 wheels — the runtime target)
 - AWS CLI configured with credentials for the target account
+- IAM user/role with the required permissions (EC2, IAM, Secrets Manager, Lambda, CloudWatch, EventBridge, and **DLM including `dlm:TagResource`** — see the runbook)
 - `CLOUDFLARE_API_TOKEN` env var (for DNS management)
 - Discord application with public key, bot token, and application ID
 
@@ -76,6 +80,17 @@ cd mc-server-iac
 # Set required env vars
 export CLOUDFLARE_API_TOKEN=<your-token>
 
+# Build Lambda deps targeting the runtime (Linux arm64, Python 3.11).
+# MUST be done before tofu apply, and re-run whenever requirements.txt changes.
+pip3 install \
+  --target server_controller/ \
+  --platform manylinux2014_aarch64 \
+  --python-version 3.11 \
+  --implementation cp \
+  --only-binary=:all: \
+  --upgrade \
+  -r server_controller/requirements.txt
+
 # Optional: override defaults via terraform.tfvars (not committed)
 echo 'discord_webhook_url = "https://discord.com/api/webhooks/..."' > terraform.tfvars
 
@@ -87,40 +102,43 @@ tofu apply
 
 ### Post-deploy Setup
 
-1. **Set the Discord public key** in Secrets Manager:
-   ```bash
-   aws secretsmanager update-secret \
-     --secret-id MCServerInstance-discord-signing-key \
-     --secret-string '{"public_key":"<hex-from-discord-developer-portal>"}'
-   ```
-2. **Register the Lambda Function URL** as a webhook in your Discord application.
-3. **Add Discord bot** to your server and create a `/mc` slash command pointing to the Function URL.
+The order below matters: Discord verifies the Interactions Endpoint URL by sending a signed ping, which the Lambda can only answer once the public key is in Secrets Manager.
 
-See [docs/runbook.md](./docs/runbook.md) for full post-deploy steps.
+1. **Store the Discord public key in Secrets Manager** (from Discord Developer Portal → General Information):
+   ```bash
+   aws secretsmanager put-secret-value \
+     --secret-id MCServerInstance-discord-signing-key \
+     --secret-string '{"public_key":"<hex>"}'
+   ```
+2. **Set the Interactions Endpoint URL** in the Discord portal to the Lambda Function URL (from `tofu output function_url`) and click _Save Changes_.
+3. **Install the bot** to your guild with the OAuth URL (scopes: `bot applications.commands`).
+4. **Register the `/mc` slash command** against your guild via the Discord REST API.
+
+Full step-by-step (including the exact OAuth URL format and the command-registration curl) is in [docs/runbook.md](./docs/runbook.md#how-to-set-up-the-discord-application).
 
 ## Cost Estimate
 
-| Resource | Monthly Cost (est.) |
-|---|---|
-| EC2 `t4g.large` (stopped = no charge) | ~$0 if stopped most of the month |
-| EBS `gp3` 10 GB | ~$1.10 |
-| Lambda invocations (start/stop/idle-check) | ~$0.05 |
-| CloudWatch metrics + alarm | ~$0.10 |
-| EIP (always allocated) | ~$3.65 |
-| Cloudflare DNS | $0 |
-| **Total (idle)** | **~$4.90/mo** |
-| **Total (running full-time)** | **~$53/mo** |
+| Resource                                   | Monthly Cost (est.)              |
+| ------------------------------------------ | -------------------------------- |
+| EC2 `t4g.large` (stopped = no charge)      | ~$0 if stopped most of the month |
+| EBS `gp3` 10 GB                            | ~$1.10                           |
+| Lambda invocations (start/stop/idle-check) | ~$0.05                           |
+| CloudWatch metrics + alarm                 | ~$0.10                           |
+| EIP (always allocated)                     | ~$3.65                           |
+| Cloudflare DNS                             | $0                               |
+| **Total (idle)**                           | **~$4.90/mo**                    |
+| **Total (running full-time)**              | **~$53/mo**                      |
 
 Running 2×/week for ~4 hours per session ≈ 32 hours/month → **~$7/mo** (EC2 + fixed costs).
 
 ## Documentation
 
-| File | Purpose |
-|---|---|
-| [PLAN.md](./PLAN.md) | Single source of truth for the revival effort |
-| [CLAUDE.md](./CLAUDE.md) | AI session context: conventions, commands, boundaries |
-| [AGENTS.md](./AGENTS.md) | Rules for coding agents |
-| [docs/runbook.md](./docs/runbook.md) | Ops procedures |
+| File                                 | Purpose                                               |
+| ------------------------------------ | ----------------------------------------------------- |
+| [PLAN.md](./PLAN.md)                 | Single source of truth for the revival effort         |
+| [CLAUDE.md](./CLAUDE.md)             | AI session context: conventions, commands, boundaries |
+| [AGENTS.md](./AGENTS.md)             | Rules for coding agents                               |
+| [docs/runbook.md](./docs/runbook.md) | Ops procedures                                        |
 
 ## License
 
