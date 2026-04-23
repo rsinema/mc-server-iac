@@ -54,9 +54,10 @@ flowchart LR
 ## How Friends Connect
 
 1. Install Minecraft and connect to `mc.rsinema.com:25565`.
-2. Your username must be on the server whitelist (see [runbook](./docs/runbook.md)).
+2. Ask someone in the Discord to run `/mc whitelist add user:<your_mojang_username>` — the server enforces an allowlist and rejects unrecognized accounts.
 3. Use `/mc start` in Discord to spin up the server.
 4. The server stops itself 15 minutes after the last player disconnects.
+5. Run `/mc help` in Discord to see every available command.
 
 ## Quickstart
 

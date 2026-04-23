@@ -96,6 +96,7 @@ resource "aws_lambda_function" "server_controller" {
       RCON_PASSWORD_SECRET_ARN       = var.rcon_password_secret_arn
       DISCORD_WEBHOOK_URL            = var.discord_webhook_url
       IDLE_STOP_ALARM_NAME           = var.idle_stop_alarm_name
+      ADMIN_DISCORD_USER_IDS         = join(",", var.admin_discord_user_ids)
     }
   }
 }

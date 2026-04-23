@@ -41,3 +41,9 @@ variable "rcon_password" {
   type        = string
   sensitive   = true
 }
+
+variable "whitelist_seed" {
+  description = "Mojang usernames seeded into whitelist.json on first boot. itzg merges these with any existing whitelist entries, so runtime additions via /mc whitelist persist."
+  type        = list(string)
+  default     = []
+}

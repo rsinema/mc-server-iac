@@ -263,7 +263,7 @@ This is the one-time bootstrap after the first `tofu apply`. The ordering matter
 
 ## How to Register / Update Slash Commands
 
-The `/mc` command takes a required string option named `sub` with choices `start`, `stop`, `status`, `players`. Register it via Discord's REST API. Use guild-scoped registration for instant updates during development; global for production (propagates in up to 1 hour).
+The `/mc` command is a parent with nested subcommands and subcommand groups (Discord option types `1` and `2`). This gives users native autocomplete like `/mc whitelist add user:<name>` rather than a flat `sub:whitelist_add` choice. Register via Discord's REST API — guild-scoped for instant updates during development, global for production (propagates in up to 1 hour).
 
 ```bash
 export APP_ID=<application-id>
@@ -277,16 +277,37 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
     "name": "mc",
     "description": "Control the Minecraft server",
     "options": [
+      {"name": "start",   "description": "Start the server",    "type": 1},
+      {"name": "stop",    "description": "Stop the server",     "type": 1},
+      {"name": "status",  "description": "Show server status",  "type": 1},
+      {"name": "players", "description": "List online players", "type": 1},
+      {"name": "help",    "description": "Show command help",   "type": 1},
       {
-        "name": "sub",
-        "description": "Action to perform",
-        "type": 3,
-        "required": true,
-        "choices": [
-          {"name": "start",   "value": "start"},
-          {"name": "stop",    "value": "stop"},
-          {"name": "status",  "value": "status"},
-          {"name": "players", "value": "players"}
+        "name": "whitelist",
+        "description": "Manage the player whitelist",
+        "type": 2,
+        "options": [
+          {
+            "name": "add",
+            "description": "Add a player to the whitelist",
+            "type": 1,
+            "options": [
+              {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+            ]
+          },
+          {
+            "name": "remove",
+            "description": "Remove a player (admin only)",
+            "type": 1,
+            "options": [
+              {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+            ]
+          },
+          {
+            "name": "list",
+            "description": "Show current whitelist",
+            "type": 1
+          }
         ]
       }
     ]
@@ -294,6 +315,8 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
 ```
 
 Drop `/guilds/$GUILD_ID` from the path for a global command.
+
+**Re-running this replaces the previous command definition for the same name.** If you change the option tree (e.g. adding another subcommand), re-run the curl — guild commands update instantly, global commands take up to an hour. You can also list and delete commands via `GET/DELETE /applications/$APP_ID/guilds/$GUILD_ID/commands[/$ID]`.
 
 **If the response is `{"message": "Missing Access", "code": 50001}`:** the bot is not installed in that guild (or was installed without `applications.commands` scope). Run the OAuth URL from the previous section and re-invite.
 
@@ -316,6 +339,58 @@ incoming interaction signatures. You cannot rotate this key yourself — Discord
    ```
 
 3. The Lambda reads the key from Secrets Manager on each invocation — no redeploy needed.
+
+---
+
+## How the Whitelist Works
+
+Two layers of access control sit in front of the server:
+
+1. **Mojang authentication** (always on) — Minecraft itself refuses connections from clients that can't prove ownership of a real Mojang account. Nobody can impersonate your friends.
+2. **In-game whitelist** (`whitelist.json`) — even valid Mojang accounts are rejected unless listed. Enforced because `modules/compute/scripts/compute_setup.sh.tpl` sets `ENFORCE_WHITELIST=TRUE` on the itzg container.
+
+**Where the whitelist lives:**
+- `whitelist.json` is persisted on the **EBS data volume** mounted at `/opt/minecraft`. It survives instance stop/start and re-creates on fresh boots from seed.
+- First-boot seed comes from `var.whitelist_seed` (root `variables.tf`) — a list of Mojang usernames piped into the container as `WHITELIST=a,b,c`. itzg merges these with any existing entries, so runtime additions via Discord persist across reboots.
+
+**Managing it day-to-day via Discord:**
+- `/mc whitelist add user:<name>` — RCON-runs `whitelist add`. Anyone in the guild can add.
+- `/mc whitelist remove user:<name>` — **admin only**. Only Discord user IDs listed in `var.admin_discord_user_ids` can run this (see *How to Authorize Admin Commands*).
+- `/mc whitelist list` — RCON-runs `whitelist list`.
+
+All three require the server to be `running` (they go over RCON, which only responds when the container is up). If someone runs `/mc whitelist add` while the server is stopped, they'll get a "start the server first" message.
+
+**Input validation:** The Lambda regex-checks usernames against `^[A-Za-z0-9_]{3,16}$` before passing to RCON — both to reject typos and to prevent command injection (RCON treats `;` and newlines as command separators, and PaperMC doesn't shell-escape arguments).
+
+---
+
+## How to Authorize Admin Commands
+
+`/mc whitelist remove` is gated to specific Discord users. Everyone else sees `"/mc whitelist remove is admin-only."` and the interaction doesn't even defer.
+
+1. **Get your Discord user ID.** In Discord: User Settings → Advanced → Developer Mode (enable), then right-click your name → Copy User ID. It's a 17–19 digit string (snowflake).
+
+2. **Add it to `terraform.tfvars`** at the repo root (this file is gitignored, so your ID won't leak):
+   ```hcl
+   admin_discord_user_ids = ["123456789012345678"]
+   ```
+
+3. **Apply:**
+   ```bash
+   tofu apply -target=module.control.aws_lambda_function.server_controller
+   ```
+   Only the Lambda's env var changes — no other resources touched.
+
+4. **Verify** by running `/mc whitelist remove user:someone` — if you're authorized, it runs; otherwise the Lambda logs `Admin-gated command denied for user <your-id>` in CloudWatch.
+
+**To add a co-admin**, append their ID to the list and re-apply. **To audit who's an admin**, read the env var:
+```bash
+aws lambda get-function-configuration \
+  --function-name MCServerInstance-server-controller \
+  --query 'Environment.Variables.ADMIN_DISCORD_USER_IDS' --output text
+```
+
+If the list is empty (the default), `/mc whitelist remove` is denied to everyone — fail-closed behavior. That's intentional: a misconfigured IaC shouldn't silently grant destructive commands to all guild members.
 
 ---
 
@@ -474,6 +549,12 @@ The bot isn't installed in the target guild, or was installed without the `appli
 
 ### `/mc status` reports the wrong player count
 PaperMC's `list` output is `"There are <N> of a max of <M> players online: …"` — a whitespace-tokenizing parser will happily grab `<M>` (the slot max) instead of `<N>`. The handler in `server_controller/controller.py` uses a regex (`r"There are (\d+)"`) that matches the same pattern as the shell-side metric publisher in `compute_setup.sh.tpl`. Keep them aligned if you touch either.
+
+### Friend says "You are not whitelisted on this server"
+Expected if their Mojang username isn't in `whitelist.json`. Any guild member can add them with `/mc whitelist add user:<their_name>` — no admin needed. Check current state with `/mc whitelist list`. The username must be their **Mojang** (Minecraft Java) name, not their Discord handle; they're usually different.
+
+### Slash command returns "Unknown command: `/mc (no subcommand)`"
+The user invoked `/mc` bare (or with a stale option shape from before the subcommand-group refactor). Re-register the command via the curl in *How to Register the `/mc` Slash Command* — guild-scoped re-registrations apply instantly, so the new autocomplete tree will show up in their Discord client within a few seconds.
 
 ### Discord shows "is thinking…" forever after a slash command
 The initial deferred ack succeeded but the async follow-up never reached Discord. Two common causes:

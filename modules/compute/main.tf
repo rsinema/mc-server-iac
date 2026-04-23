@@ -90,6 +90,7 @@ resource "aws_instance" "mc_server" {
     minecraft_version = var.minecraft_version
     minecraft_memory  = var.minecraft_memory
     rcon_password     = var.rcon_password
+    whitelist_seed    = join(",", var.whitelist_seed)
   })
   user_data_replace_on_change = true
 
