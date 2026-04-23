@@ -8,8 +8,6 @@ Infrastructure-as-Code for a shared Minecraft server on AWS EC2, controlled via 
 
 ## Architecture
 
-![](mermaid-diagram-2026-04-17-203958.png)
-
 ```mermaid
 flowchart LR
     subgraph AWS["AWS (us-west-2)"]
