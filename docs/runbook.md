@@ -68,6 +68,42 @@ The `archive_file` data source in `modules/control/main.tf` hashes the `server_c
 
 ---
 
+## How the Discord Interaction Flow Works
+
+Discord requires every interaction endpoint to **ack within 3 seconds** or the user sees `application did not respond`. `/mc start` can take 30+ seconds (EC2 boot), so the controller uses the standard **deferred-response + follow-up** pattern:
+
+```
+┌──────────┐   1. signed POST         ┌──────────────────┐
+│ Discord  │ ───────────────────────▶ │ Lambda (sync)    │
+│          │ ◀─────────────────────── │  verify sig      │
+│          │   2. type:5 deferred ack │  async-invoke    │
+└──────────┘   (within ~300ms)        └─────────┬────────┘
+                                                │ InvocationType=Event
+                                                ▼
+┌──────────┐   4. PATCH @original     ┌──────────────────┐
+│ Discord  │ ◀─────────────────────── │ Lambda (async)   │
+│          │   (content goes here)    │  run command     │
+└──────────┘                          │  post follow-up  │
+                                      └──────────────────┘
+```
+
+The flow in `server_controller/controller.py`:
+
+1. **Sync invocation** (Function URL): verifies the Ed25519 signature, then returns response `type: 5` (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE). The user sees *"app is thinking…"*.
+2. **Self-invoke**: before returning, the handler async-invokes its own ARN (`context.invoked_function_arn`) with `InvocationType="Event"` and payload `{"async_command": true, "sub": "...", "application_id": "...", "interaction_token": "..."}`.
+3. **Async invocation**: the second Lambda instance runs the real work (EC2 start, RCON query, etc.) — no 3-second pressure, 15 minutes of budget.
+4. **Follow-up**: async worker `PATCH`es `https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}/messages/@original` with the final content. Discord replaces the "thinking…" indicator with the message.
+
+**Why an `application_id` isn't in Secrets Manager:** it comes from the interaction payload itself (`payload["application_id"]`), so there's nothing extra to provision.
+
+**IAM requirements:** the controller role needs `lambda:InvokeFunction` on itself (see `InvokeSelfForDeferredDiscord` statement in `modules/control/main.tf`). Without it, step 2 fails silently and the "thinking…" message hangs forever.
+
+**Outbound HTTP User-Agent:** Cloudflare fronts `discord.com` and **blocks default `Python-urllib/*` User-Agents** with error `1010`. Any follow-up request must set a real UA (we use `DiscordBot (…, 1.0)` per Discord's recommended format). See `DISCORD_USER_AGENT` in `controller.py`.
+
+**When NOT to defer:** the Discord `PING` (interaction type 1) during endpoint verification must return a plain `{type: 1}` — not deferred — or the portal rejects the URL.
+
+---
+
 ## How to Bump the Minecraft Version
 
 1. Edit `variables.tf` (root) and update `minecraft_version`:
@@ -438,6 +474,20 @@ The bot isn't installed in the target guild, or was installed without the `appli
 
 ### `/mc status` reports the wrong player count
 PaperMC's `list` output is `"There are <N> of a max of <M> players online: …"` — a whitespace-tokenizing parser will happily grab `<M>` (the slot max) instead of `<N>`. The handler in `server_controller/controller.py` uses a regex (`r"There are (\d+)"`) that matches the same pattern as the shell-side metric publisher in `compute_setup.sh.tpl`. Keep them aligned if you touch either.
+
+### Discord shows "is thinking…" forever after a slash command
+The initial deferred ack succeeded but the async follow-up never reached Discord. Two common causes:
+
+1. **Cloudflare 1010 on the follow-up PATCH.** Logs show `Discord follow-up failed: 403 error code: 1010`. Cloudflare (which fronts `discord.com`) blocks requests whose `User-Agent` is a default Python `urllib` string. Fix: every outbound HTTP call to `discord.com` must set `User-Agent` — see `DISCORD_USER_AGENT` in `server_controller/controller.py`.
+
+2. **Missing `lambda:InvokeFunction` on self.** Logs show only the first (sync) invocation, never a second one with `async=True`. The IAM role needs to allow invoking its own function — see the `InvokeSelfForDeferredDiscord` statement in `modules/control/main.tf`. Verify with:
+   ```bash
+   aws iam get-role-policy --role-name MCServerInstance-controller-role \
+     --policy-name ... | jq '.PolicyDocument.Statement[] | select(.Sid=="InvokeSelfForDeferredDiscord")'
+   ```
+
+### `application did not respond` on every slash command
+The endpoint returned an error or exceeded 3 seconds before sending a deferred ack. Check CloudWatch for `Runtime.ImportModuleError` (Python deps built for the wrong platform/version — see *How to Build / Rebuild the Lambda Dependencies*) or an exception from `verify_discord_signature` (stale public key in Secrets Manager).
 
 ### RCON is reachable from the public internet
 By design (SG allows 25575 from `0.0.0.0/0`) — password-protected but not lovely. If you want to tighten, restrict the ingress CIDR in `modules/network/main.tf` or remove the rule and reach RCON via SSM port-forward from the Lambda / admin box.

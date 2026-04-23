@@ -34,3 +34,7 @@ terraform.rc
 payload.json
 lambdas/
 .secrets
+
+# Python bytecode caches (regenerated at runtime; should not be vendored into Lambda zip)
+__pycache__/
+*.pyc

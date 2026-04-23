@@ -57,6 +57,14 @@ resource "aws_iam_policy" "controller_lambda" {
           "cloudwatch:SetAlarmState"
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "InvokeSelfForDeferredDiscord"
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = "arn:aws:lambda:*:*:function:${var.server_name}-server-controller"
       }
     ]
   })
