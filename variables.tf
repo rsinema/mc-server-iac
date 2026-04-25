@@ -64,3 +64,15 @@ variable "discord_webhook_url" {
   default     = ""
   sensitive   = true
 }
+
+variable "whitelist_seed" {
+  description = "Mojang usernames seeded into the Minecraft whitelist on first boot. Set at least your own username before applying, since ENFORCE_WHITELIST=TRUE is on and no one is joinable without being listed."
+  type        = list(string)
+  default     = []
+}
+
+variable "admin_discord_user_ids" {
+  description = "Discord user IDs (snowflakes, as strings) permitted to run admin-gated commands like /mc whitelist remove. Populate via terraform.tfvars; if empty, admin-gated commands are denied to everyone."
+  type        = list(string)
+  default     = []
+}

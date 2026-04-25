@@ -25,6 +25,8 @@ write_files:
           -e ENABLE_RCON=true \
           -e RCON_PASSWORD=${rcon_password} \
           -e SERVER_PORT=25565 \
+          -e ENFORCE_WHITELIST=TRUE \
+          -e WHITELIST=${whitelist_seed} \
           -p 25565:25565 \
           -p 25575:25575 \
           itzg/minecraft-server

@@ -29,3 +29,9 @@ variable "idle_stop_alarm_name" {
   description = "Name of the CloudWatch idle-stop alarm that Lambda resets to OK on /mc start"
   type        = string
 }
+
+variable "admin_discord_user_ids" {
+  description = "Discord user IDs allowed to run admin-gated subcommands (e.g. /mc whitelist remove). Empty list denies all."
+  type        = list(string)
+  default     = []
+}

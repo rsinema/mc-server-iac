@@ -24,9 +24,50 @@ TYPE_PONG = 1
 TYPE_CHANNEL_MESSAGE = 4
 TYPE_DEFERRED_MESSAGE = 5
 
-# Commands that take longer than Discord's 3-second ack window and must be
-# handled via deferred-response + async self-invoke.
-DEFERRED_SUBCOMMANDS = {"start", "stop", "status", "players"}
+# Discord application command option types
+OPT_SUB_COMMAND = 1
+OPT_SUB_COMMAND_GROUP = 2
+
+# Mojang username: 3-16 chars, letters/digits/underscore. Also guards against
+# RCON command injection — whitelist add takes a raw string, and `; op evil`
+# would be parsed as two commands otherwise.
+MOJANG_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+
+HELP_TEXT = (
+    "**Minecraft Server Commands** — connect at `mc.rsinema.com:25565`\n\n"
+    "`/mc start` — spin up the server (~30s for EC2 + ~30s for MC to start).\n"
+    "`/mc stop` — shut it down. Also auto-stops after 15 min of no players.\n"
+    "`/mc status` — server state, player count, and IP.\n"
+    "`/mc players` — who's currently online.\n"
+    "`/mc whitelist add user:<mojang_name>` — add a player to the allowlist.\n"
+    "`/mc whitelist remove user:<mojang_name>` — remove a player (admin only).\n"
+    "`/mc whitelist list` — show who's whitelisted.\n"
+    "`/mc help` — this message.\n\n"
+    "Only whitelisted Mojang usernames can join. If you can't connect, ask "
+    "someone in the server to run `/mc whitelist add user:<your_name>`."
+)
+
+
+# ---------------------------------------------------------------------------
+# Command registry
+#
+# Each command advertises how it should be acked (immediate vs. deferred via
+# async self-invoke), whether the response is ephemeral, and whether it's
+# admin-gated. The ephemeral flag is committed at the deferred-ack step — the
+# follow-up PATCH can't change it — so this registry is the single source of
+# truth the sync handler consults before dispatching.
+# ---------------------------------------------------------------------------
+
+COMMAND_REGISTRY = {
+    ("start",):              {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("stop",):               {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("status",):             {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("players",):            {"ack": "deferred",  "ephemeral": False, "admin": False},
+    ("help",):               {"ack": "immediate", "ephemeral": True,  "admin": False},
+    ("whitelist", "add"):    {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("whitelist", "remove"): {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    ("whitelist", "list"):   {"ack": "deferred",  "ephemeral": True,  "admin": False},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +115,46 @@ def get_rcon_password(secret_arn: str) -> str:
     if _rcon_password_cache is None:
         _rcon_password_cache = _secrets.get_secret_value(SecretId=secret_arn)["SecretString"]
     return _rcon_password_cache
+
+
+# ---------------------------------------------------------------------------
+# Interaction parsing / authorization
+# ---------------------------------------------------------------------------
+
+def parse_invocation(data: dict) -> tuple[tuple[str, ...], dict]:
+    """Walk Discord's nested options tree to (command_path, leaf_args).
+
+    Examples:
+        /mc start                        -> (("start",),            {})
+        /mc help                         -> (("help",),             {})
+        /mc whitelist add user:Steve     -> (("whitelist", "add"),  {"user": "Steve"})
+        /mc whitelist list               -> (("whitelist", "list"), {})
+    """
+    path: list[str] = []
+    options = data.get("options", [])
+    while options and options[0].get("type") in (OPT_SUB_COMMAND, OPT_SUB_COMMAND_GROUP):
+        path.append(options[0]["name"])
+        options = options[0].get("options", [])
+    args = {o["name"]: o.get("value") for o in options}
+    return tuple(path), args
+
+
+def get_caller_id(payload: dict) -> str | None:
+    """Discord puts the invoker in `member.user` for guild interactions and in `user` for DMs."""
+    member = payload.get("member")
+    if member and "user" in member:
+        return member["user"].get("id")
+    user = payload.get("user")
+    if user:
+        return user.get("id")
+    return None
+
+
+def is_admin(user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    admins = {x.strip() for x in os.environ.get("ADMIN_DISCORD_USER_IDS", "").split(",") if x.strip()}
+    return user_id in admins
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +256,8 @@ def _immediate_response(content: str, ephemeral: bool = True) -> dict:
 def _deferred_response(ephemeral: bool = True) -> dict:
     # Ack within 3s and keep the interaction token valid for 15 minutes of
     # follow-up edits. The user sees "Bot is thinking…" until we PATCH the
-    # original message via discord_followup().
+    # original message via discord_followup(). The ephemeral flag is locked
+    # in here and cannot be changed by the follow-up.
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
@@ -293,16 +375,80 @@ def run_players(instance_id: str, rcon_password: str) -> str:
         return f"Could not fetch player list: {e}"
 
 
-def dispatch_subcommand(sub: str, instance_id: str, rcon_password: str) -> str:
-    if sub == "start":
+def _require_running_server(instance_id: str) -> tuple[str | None, str | None]:
+    """Return (error_message, ip) — if server isn't ready for RCON, error_message is non-None."""
+    state = get_instance_state(instance_id)
+    if state != "running":
+        return "Server must be running for this command. Use `/mc start` first.", None
+    ip = get_instance_public_ip(instance_id)
+    if not ip:
+        return "Server is starting — public IP not yet assigned.", None
+    return None, ip
+
+
+def run_whitelist_add(instance_id: str, rcon_password: str, username: str) -> str:
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    err, ip = _require_running_server(instance_id)
+    if err:
+        return err
+
+    try:
+        output = rcon_command(f"whitelist add {username}", rcon_password, host=ip)
+    except Exception as e:
+        return f"Failed to add `{username}` to whitelist: {e}"
+
+    stripped = output.strip() if output else ""
+    return f"Whitelisted `{username}`." + (f"\n```\n{stripped}\n```" if stripped else "")
+
+
+def run_whitelist_remove(instance_id: str, rcon_password: str, username: str) -> str:
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    err, ip = _require_running_server(instance_id)
+    if err:
+        return err
+
+    try:
+        output = rcon_command(f"whitelist remove {username}", rcon_password, host=ip)
+    except Exception as e:
+        return f"Failed to remove `{username}`: {e}"
+
+    stripped = output.strip() if output else ""
+    return f"Removed `{username}` from whitelist." + (f"\n```\n{stripped}\n```" if stripped else "")
+
+
+def run_whitelist_list(instance_id: str, rcon_password: str) -> str:
+    err, ip = _require_running_server(instance_id)
+    if err:
+        return err
+
+    try:
+        output = rcon_command("whitelist list", rcon_password, host=ip)
+        return f"```\n{output or 'No players whitelisted.'}\n```"
+    except Exception as e:
+        return f"Failed to list whitelist: {e}"
+
+
+def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str) -> str:
+    """Route a parsed command path to its implementation (async worker side)."""
+    if path == ("start",):
         return run_start(instance_id)
-    if sub == "stop":
+    if path == ("stop",):
         return run_stop(instance_id)
-    if sub == "status":
+    if path == ("status",):
         return run_status(instance_id, rcon_password)
-    if sub == "players":
+    if path == ("players",):
         return run_players(instance_id, rcon_password)
-    return f"Unknown subcommand: `{sub}`. Use `/mc start|stop|status|players`."
+    if path == ("whitelist", "add"):
+        return run_whitelist_add(instance_id, rcon_password, args.get("user", ""))
+    if path == ("whitelist", "remove"):
+        return run_whitelist_remove(instance_id, rcon_password, args.get("user", ""))
+    if path == ("whitelist", "list"):
+        return run_whitelist_list(instance_id, rcon_password)
+    return f"Unknown subcommand: `/mc {' '.join(path)}`. Try `/mc help`."
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +503,8 @@ def handle_start_action(instance_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def handle_async_command(event: dict) -> dict:
-    sub = event["sub"]
+    path = tuple(event.get("path", []))
+    args = event.get("args", {})
     application_id = event["application_id"]
     interaction_token = event["interaction_token"]
     instance_id = os.environ["INSTANCE_ID"]
@@ -366,13 +513,13 @@ def handle_async_command(event: dict) -> dict:
     rcon_pw = get_rcon_password(rcon_arn) if rcon_arn else ""
 
     try:
-        content = dispatch_subcommand(sub, instance_id, rcon_pw)
+        content = dispatch_async(path, args, instance_id, rcon_pw)
     except Exception as e:
         logger.exception("Async command failed")
-        content = f"Command `{sub}` failed: {e}"
+        content = f"Command `/mc {' '.join(path)}` failed: {e}"
 
     discord_followup(application_id, interaction_token, content)
-    return {"statusCode": 200, "body": json.dumps({"sub": sub, "delivered": True})}
+    return {"statusCode": 200, "body": json.dumps({"path": list(path), "delivered": True})}
 
 
 # ---------------------------------------------------------------------------
@@ -437,42 +584,51 @@ def lambda_handler(event, context):
     if payload.get("type") == 1:
         return {"statusCode": 200, "body": json.dumps({"type": TYPE_PONG})}
 
-    command_name = payload.get("data", {}).get("name", "")
-    options = {
-        o["name"]: o.get("value")
-        for o in payload.get("data", {}).get("options", [])
-    }
-
-    logger.info(f"Routing command: {command_name} options={options}")
-
-    if command_name != "mc":
+    data = payload.get("data", {})
+    if data.get("name") != "mc":
         return _immediate_response("Unknown interaction type.")
 
-    sub = options.get("sub") or options.get("action", "status")
+    path, args = parse_invocation(data)
+    logger.info(f"Routing command: /mc {' '.join(path)} args={args}")
 
-    if sub not in DEFERRED_SUBCOMMANDS:
-        return _immediate_response(f"Unknown subcommand: `{sub}`. Use `/mc start|stop|status|players`.")
+    entry = COMMAND_REGISTRY.get(path)
+    if entry is None:
+        return _immediate_response(f"Unknown command: `/mc {' '.join(path) or '(no subcommand)'}`. Try `/mc help`.")
 
+    # Admin gate — check before deferring so we can return a clean immediate error.
+    if entry["admin"]:
+        caller = get_caller_id(payload)
+        if not is_admin(caller):
+            logger.info(f"Admin-gated command denied for user {caller}: /mc {' '.join(path)}")
+            return _immediate_response(f"`/mc {' '.join(path)}` is admin-only.")
+
+    # Immediate commands (help): respond inline, no async round-trip.
+    if entry["ack"] == "immediate":
+        if path == ("help",):
+            return _immediate_response(HELP_TEXT, ephemeral=entry["ephemeral"])
+        return _immediate_response(f"No handler for `/mc {' '.join(path)}`.")
+
+    # Deferred commands: ack now, run work in a self-invocation.
     application_id = payload.get("application_id")
     interaction_token = payload.get("token")
     if not application_id or not interaction_token:
         logger.error("Interaction payload missing application_id or token")
         return _immediate_response("Interaction is malformed — cannot defer.")
 
-    # Fire-and-forget self-invoke, then ack within 3 seconds.
     try:
         _lambda.invoke(
             FunctionName=context.invoked_function_arn,
             InvocationType="Event",
             Payload=json.dumps({
                 "async_command": True,
-                "sub": sub,
+                "path": list(path),
+                "args": args,
                 "application_id": application_id,
                 "interaction_token": interaction_token,
             }).encode("utf-8"),
         )
     except Exception as e:
         logger.exception("Failed to async-invoke self")
-        return _immediate_response(f"Could not dispatch `/mc {sub}`: {e}")
+        return _immediate_response(f"Could not dispatch `/mc {' '.join(path)}`: {e}")
 
-    return _deferred_response(ephemeral=True)
+    return _deferred_response(ephemeral=entry["ephemeral"])

@@ -65,16 +65,20 @@ module "compute" {
   eip_allocation_id = module.network.eip_allocation_id
   subnet_id         = data.aws_subnet.first.id
   rcon_password     = random_password.rcon.result
+  whitelist_seed    = var.whitelist_seed
 }
 
 # Storage module
 module "storage" {
   source = "./modules/storage"
 
-  server_name       = var.server_name
-  volume_size       = var.mc_volume_size
-  volume_type       = var.mc_volume_type
-  availability_zone = module.compute.availability_zone
+  server_name = var.server_name
+  volume_size = var.mc_volume_size
+  volume_type = var.mc_volume_type
+  # Source AZ from the subnet (static) rather than the instance (computed).
+  # Otherwise, any user_data change becomes a data-destroying apply because the
+  # instance is replaced with AZ "known after apply", forcing volume replacement.
+  availability_zone = data.aws_subnet.first.availability_zone
   instance_id       = module.compute.instance_id
 }
 
@@ -88,6 +92,7 @@ module "control" {
   rcon_password_secret_arn       = aws_secretsmanager_secret.rcon_password.arn
   discord_webhook_url            = var.discord_webhook_url
   idle_stop_alarm_name           = "${var.server_name}-idle-stop"
+  admin_discord_user_ids         = var.admin_discord_user_ids
 }
 
 # DNS module
