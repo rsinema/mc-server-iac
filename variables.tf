@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "t4g.large"
+  default     = "m7g.large"
 }
 
 variable "server_name" {
@@ -38,6 +38,12 @@ variable "minecraft_memory" {
   description = "Memory allocation for Minecraft server in GB"
   type        = number
   default     = 6
+}
+
+variable "minecraft_seed" {
+  description = "World seed passed to the Minecraft server. Only takes effect when the world is generated; once /opt/minecraft/world exists, the seed is baked into level.dat and this value is ignored. Leave empty for a random seed."
+  type        = string
+  default     = "enzy-minecraft"
 }
 
 variable "owner_tag" {

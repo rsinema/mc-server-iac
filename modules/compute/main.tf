@@ -89,6 +89,7 @@ resource "aws_instance" "mc_server" {
   user_data = templatefile("${path.module}/scripts/compute_setup.sh.tpl", {
     minecraft_version = var.minecraft_version
     minecraft_memory  = var.minecraft_memory
+    minecraft_seed    = var.minecraft_seed
     rcon_password     = var.rcon_password
     whitelist_seed    = join(",", var.whitelist_seed)
   })

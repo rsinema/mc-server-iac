@@ -61,6 +61,7 @@ module "compute" {
   instance_type     = var.instance_type
   minecraft_version = var.minecraft_version
   minecraft_memory  = var.minecraft_memory
+  minecraft_seed    = var.minecraft_seed
   security_group_id = module.network.security_group_id
   eip_allocation_id = module.network.eip_allocation_id
   subnet_id         = data.aws_subnet.first.id

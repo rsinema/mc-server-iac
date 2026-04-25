@@ -21,6 +21,12 @@ variable "minecraft_memory" {
   default     = 6
 }
 
+variable "minecraft_seed" {
+  description = "World seed. Only honored on world creation; ignored once level.dat exists. Empty string = random seed."
+  type        = string
+  default     = ""
+}
+
 variable "security_group_id" {
   description = "Security group ID for the EC2 instance"
   type        = string

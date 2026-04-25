@@ -27,6 +27,7 @@ write_files:
           -e SERVER_PORT=25565 \
           -e ENFORCE_WHITELIST=TRUE \
           -e WHITELIST=${whitelist_seed} \
+          -e SEED=${minecraft_seed} \
           -p 25565:25565 \
           -p 25575:25575 \
           itzg/minecraft-server
