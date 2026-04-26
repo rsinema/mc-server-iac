@@ -19,6 +19,7 @@ write_files:
           --name minecraft \
           -v /opt/minecraft:/data \
           -e TYPE=PAPER \
+          -e PAPER_CHANNEL=experimental \
           -e VERSION=${minecraft_version} \
           -e MEMORY=${minecraft_memory}G \
           -e EULA=TRUE \

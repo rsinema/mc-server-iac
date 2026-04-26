@@ -31,7 +31,7 @@ variable "mc_volume_type" {
 variable "minecraft_version" {
   description = "Minecraft server version to run"
   type        = string
-  default     = "1.21.5"
+  default     = "26.1.2"
 }
 
 variable "minecraft_memory" {
