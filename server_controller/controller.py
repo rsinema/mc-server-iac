@@ -150,6 +150,18 @@ def get_caller_id(payload: dict) -> str | None:
     return None
 
 
+def get_caller_display_name(payload: dict) -> str:
+    """Best human-readable name for the invoker, for the public announcement.
+
+    Prefers the server nickname, then the account display name, then the
+    handle. Returns a plain string (no `<@id>` mention) so the webhook
+    announcement names the caller without pinging them.
+    """
+    member = payload.get("member") or {}
+    user = member.get("user") or payload.get("user") or {}
+    return member.get("nick") or user.get("global_name") or user.get("username") or "Someone"
+
+
 def is_admin(user_id: str | None) -> bool:
     if not user_id:
         return False
@@ -291,11 +303,19 @@ def discord_followup(application_id: str, interaction_token: str, content: str) 
 
 
 def discord_webhook_notify(webhook_url: str, message: str) -> None:
-    """Fire-and-forget message to a standalone Discord webhook (idle-stop notice)."""
+    """Fire-and-forget message to a standalone Discord webhook (idle-stop / start notice).
+
+    Mentions are suppressed (`allowed_mentions.parse = []`) so neither a stray
+    `@everyone` in the text nor a member name resolves to a ping — these are
+    informational channel posts, not call-outs.
+    """
     if not webhook_url:
         return
     try:
-        data = json.dumps({"content": message}).encode("utf-8")
+        data = json.dumps({
+            "content": message,
+            "allowed_mentions": {"parse": []},
+        }).encode("utf-8")
         req = urllib.request.Request(
             webhook_url,
             data=data,
@@ -316,10 +336,18 @@ def discord_webhook_notify(webhook_url: str, message: str) -> None:
 # These run inside the async self-invocation, not the initial Discord request.
 # ---------------------------------------------------------------------------
 
-def run_start(instance_id: str) -> str:
+def run_start(instance_id: str, caller_name: str = "Someone", webhook_url: str = "") -> str:
+    # The string we return goes to the caller's *ephemeral* follow-up (private
+    # progress/errors). The public channel announcement is a separate webhook
+    # post, fired only once the server is actually reachable.
     state = get_instance_state(instance_id)
     if state == "running":
         ip = get_instance_public_ip(instance_id)
+        discord_webhook_notify(
+            webhook_url,
+            f"🎮 **{caller_name}** is hopping on — the Minecraft server is already up at "
+            f"`mc.rsinema.com:25565`. Come play!",
+        )
         return f"Server is already running at `{ip}:25565`."
 
     _ec2.start_instances(InstanceIds=[instance_id])
@@ -336,8 +364,15 @@ def run_start(instance_id: str) -> str:
         state = get_instance_state(instance_id)
         if state == "running":
             ip = get_instance_public_ip(instance_id)
+            discord_webhook_notify(
+                webhook_url,
+                f"🎮 **{caller_name}** started the Minecraft server! Hop on at "
+                f"`mc.rsinema.com:25565` — give it ~30s for the world to finish loading.",
+            )
             return f"Server is up at `{ip}:25565`! Give it ~30s for Minecraft to fully start."
 
+    # Timed out before EC2 reported `running` — don't announce a server that
+    # may not be reachable yet; the caller alone sees this hint.
     return "Server is starting but is taking longer than expected. Check again in a minute."
 
 
@@ -432,10 +467,11 @@ def run_whitelist_list(instance_id: str, rcon_password: str) -> str:
         return f"Failed to list whitelist: {e}"
 
 
-def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str) -> str:
+def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str,
+                   caller_name: str = "Someone", webhook_url: str = "") -> str:
     """Route a parsed command path to its implementation (async worker side)."""
     if path == ("start",):
-        return run_start(instance_id)
+        return run_start(instance_id, caller_name=caller_name, webhook_url=webhook_url)
     if path == ("stop",):
         return run_stop(instance_id)
     if path == ("status",):
@@ -512,8 +548,12 @@ def handle_async_command(event: dict) -> dict:
     rcon_arn = os.environ.get("RCON_PASSWORD_SECRET_ARN")
     rcon_pw = get_rcon_password(rcon_arn) if rcon_arn else ""
 
+    caller_name = event.get("caller_name", "Someone")
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
     try:
-        content = dispatch_async(path, args, instance_id, rcon_pw)
+        content = dispatch_async(path, args, instance_id, rcon_pw,
+                                 caller_name=caller_name, webhook_url=webhook_url)
     except Exception as e:
         logger.exception("Async command failed")
         content = f"Command `/mc {' '.join(path)}` failed: {e}"
@@ -625,6 +665,7 @@ def lambda_handler(event, context):
                 "args": args,
                 "application_id": application_id,
                 "interaction_token": interaction_token,
+                "caller_name": get_caller_display_name(payload),
             }).encode("utf-8"),
         )
     except Exception as e:
