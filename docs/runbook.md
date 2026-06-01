@@ -509,6 +509,55 @@ The equivalent `{"action":"stop"}` payload is what EventBridge sends on idle-sto
 
 ---
 
+## How to Set Up the Stats Leaderboard Export
+
+The daily export (`MCServerInstance-stats-export` Lambda) pushes per-player stat deltas to the Enzy leaderboard. Full design: [`stats-leaderboard.md`](./stats-leaderboard.md). The Lambda ships with `DRY_RUN=1`, so it computes and logs payloads but does **not** POST until you deliberately enable it — important, because the **first real POST locks the 9-column set forever**.
+
+### One-time setup (after `tofu apply`)
+
+```bash
+# 1. Store the Enzy X-Secret-Token (never commit it). Use the rotated value.
+aws secretsmanager put-secret-value \
+  --secret-id MCServerInstance-enzy-api-key \
+  --secret-string '<enzy-x-secret-token>'
+
+# 2. Populate the UUID→email map (dashed or undashed UUIDs both fine).
+#    Grab UUIDs from s3://<bucket>/raw/usercache.json after the server has run once.
+aws ssm put-parameter --overwrite \
+  --name /MCServerInstance/stats/player-email-map \
+  --type String \
+  --value '{"069a79f4-44e9-4726-a5be-fca90e38aaf5":"riley.sinema@enzy.co"}'
+```
+
+Find the bucket name with `tofu output` or `aws s3 ls | grep stats`.
+
+### Dry run → go live
+
+```bash
+# Dry run (the deployed default — stats_export_dry_run = true): compute + log, no POST.
+aws lambda invoke --function-name MCServerInstance-stats-export \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/stats.json
+cat /tmp/stats.json
+# Then inspect the would-be payload in CloudWatch Logs (look for "DRY_RUN — would POST").
+```
+
+When the payload looks right, go live through IaC (not a CLI env override, which would drift):
+
+```hcl
+# terraform.tfvars
+stats_export_dry_run = false
+```
+
+```bash
+tofu apply   # flips DRY_RUN to "0"; the next run does the first, column-locking POST
+```
+
+### Verify
+
+After two consecutive daily runs, confirm two distinct rows per player (different `snapshotKey`/`snapshotDate`) in the Enzy backing table, then check the leaderboard view in the app. To force a run off-schedule, invoke the Lambda directly with `--payload '{}'` as above.
+
+---
+
 ## Troubleshooting
 
 Lessons learned during the initial stand-up, preserved here so you don't relearn them.

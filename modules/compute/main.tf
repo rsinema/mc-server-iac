@@ -62,6 +62,27 @@ resource "aws_iam_role_policy" "ec2_permissions" {
             "ec2:ResourceTag/Name" = var.server_name
           }
         }
+      },
+      {
+        Sid    = "StatsBucketWrite"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject"
+        ]
+        Resource = "${var.stats_bucket_arn}/raw/*"
+      },
+      {
+        Sid    = "StatsBucketList"
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = var.stats_bucket_arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["raw/*"]
+          }
+        }
       }
     ]
   })
@@ -92,6 +113,7 @@ resource "aws_instance" "mc_server" {
     minecraft_seed    = var.minecraft_seed
     rcon_password     = var.rcon_password
     whitelist_seed    = join(",", var.whitelist_seed)
+    stats_bucket      = var.stats_bucket_name
   })
   user_data_replace_on_change = true
 

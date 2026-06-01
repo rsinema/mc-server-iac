@@ -10,7 +10,7 @@ A **daily** job (cron/Lambda/EventBridge) that:
 1. Fetches the current cumulative stats snapshot for all players.
 2. Loads the previous snapshot's cumulative values from local state.
 3. Computes per-stat **deltas** (`today_total − yesterday_total`, floored at 0).
-4. Emits one row per player with both cumulative (`*Total`) and delta (`*Gained`) values, tagged with today's date.
+4. Emits one row per player with the day's **delta** (`*Gained`) values, tagged with today's date. All-time and period totals are derived by Enzy at query time (SUM of dailies) — no cumulative column is sent.
 5. POSTs the array to one Enzy endpoint.
 6. Persists today's cumulative values as the new state for tomorrow's diff.
 
@@ -26,6 +26,8 @@ IdField: snapshotKey
 FileType: MinecraftStats
 ```
 
+The `X-Secret-Token` value is stored in AWS Secrets Manager and read by the export Lambda at runtime — **never committed to this repo**. See `docs/stats-leaderboard.md` §5 for the secret name and population procedure.
+
 Body: a JSON array of flat objects, all values as strings.
 
 ```json
@@ -35,14 +37,11 @@ Body: a JSON array of flat objects, all values as strings.
     "playerEmail": "riley.sinema@enzy.co",
     "snapshotDate": "2026-05-29 00:00:00",
     "mcUsername": "riley_mc",
-    "xpTotal": "1250",
-    "killsTotal": "42",
-    "deathsTotal": "11",
-    "playTimeMinutesTotal": "340",
-    "xpGained": "120",
-    "killsGained": "5",
+    "creeperKillsGained": "5",
     "deathsGained": "1",
-    "playTimeMinutesGained": "45"
+    "diamondsMinedGained": "3",
+    "distanceTraveledGained": "1820",
+    "achievementsGained": "2"
   }
 ]
 ```
@@ -64,9 +63,11 @@ Enzy keys raw rows on `(workspaceId, fileType, recordId)` and re-loads with MySQ
 
 ## Hard constraints (DO NOT VIOLATE)
 
-1. **Lock the column set.** The first POST fingerprints the column-name set and creates the backing table. Adding/removing a column later creates a *new* table and orphans the leaderboard mapping. The locked set is exactly these 12 columns:
+1. **Lock the column set.** The first POST fingerprints the column-name set and creates the backing table. Adding/removing a column later creates a *new* table and orphans the leaderboard mapping. The locked set is exactly these 9 columns:
 
-   `snapshotKey`, `playerEmail`, `snapshotDate`, `mcUsername`, `xpTotal`, `killsTotal`, `deathsTotal`, `playTimeMinutesTotal`, `xpGained`, `killsGained`, `deathsGained`, `playTimeMinutesGained`.
+   `snapshotKey`, `playerEmail`, `snapshotDate`, `mcUsername`, `creeperKillsGained`, `deathsGained`, `diamondsMinedGained`, `distanceTraveledGained`, `achievementsGained`.
+
+   The stat columns map to vanilla files: `creeperKillsGained` = `minecraft:killed/creeper`; `deathsGained` = `minecraft:custom/deaths`; `diamondsMinedGained` = `minecraft:mined/diamond_ore` + `deepslate_diamond_ore`; `distanceTraveledGained` = sum of `minecraft:custom` `*_one_cm` ÷ 100 (meters) — all from `world/stats/<uuid>.json`; `achievementsGained` = count of `done == true` entries in `world/advancements/<uuid>.json` excluding `minecraft:recipes/*`. See `docs/stats-leaderboard.md` for the full design.
 
    Adding a new stat later is a coordinated change with the Enzy side, not a unilateral push-job change.
 
@@ -80,12 +81,11 @@ Enzy keys raw rows on `(workspaceId, fileType, recordId)` and re-loads with MySQ
 
 ## Delta computation
 
-The Enzy leaderboard can only **SUM** values over a date range — it cannot subtract two snapshots. So the *job* computes deltas; Enzy aggregates them.
+The Enzy leaderboard can only **SUM** values over a date range — it cannot subtract two snapshots. So the *job* computes the daily deltas; Enzy aggregates them (all-time = SUM of every daily row; period = SUM within the date filter).
 
-- Keep local state: the previous run's cumulative values per player (`{playerEmail: {xp, kills, deaths, playTimeMinutes}}`), in a small JSON file in S3/SSM or alongside the job.
+- Keep local state: the previous run's cumulative values per player (`{playerEmail: {creeperKills, deaths, diamondsMined, distanceMeters, achievements}}`), in a small JSON file in S3/SSM or alongside the job. This state is *only* used to compute deltas — the cumulative values are never sent to Enzy.
 - On each run: `gained = max(0, today_total − previous_total)` per stat. Floor at 0 to absorb stat resets / server rollbacks.
-- **First observation of a player** (no prior state): set all `*Gained` to `0` and record the baseline. "All-time gained" then means gains since tracking started; pre-existing totals live in the `*Total` columns.
-- Always emit `*Total` (current cumulative) alongside `*Gained` (the day's delta). The Enzy side uses each for different views (see enzy-setup.md).
+- **First observation of a player** (no prior state): set all `*Gained` to `0` and record the baseline. All-time totals therefore count gains since tracking started — appropriate for a server tracked from day one. (Any stats accrued *before* tracking began are not counted; if that ever matters, seed the baseline state from a one-time export instead of zero.)
 
 ## Cadence and idempotency
 
@@ -143,6 +143,6 @@ Run the job two consecutive days and confirm **two distinct rows** per player (d
 - Python, single file (~150–200 lines), Lambda + EventBridge daily schedule.
 - `fetch_minecraft_stats() -> Dict[email, Dict[stat, int]]` (cumulative totals).
 - `load_state() / save_state()` for previous cumulative.
-- `compute_rows(today, previous, date) -> List[Dict[str,str]]` (deltas + totals + identity columns).
+- `compute_rows(today, previous, date) -> List[Dict[str,str]]` (deltas + identity columns).
 - `post_to_enzy(records)`.
 - Main: load mapping + state → fetch → compute → post → save state → log.

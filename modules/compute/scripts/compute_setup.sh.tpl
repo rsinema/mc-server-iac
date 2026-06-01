@@ -80,6 +80,43 @@ write_files:
       [Install]
       WantedBy=timers.target
 
+  - path: /opt/mc-stats/sync_stats.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Flush the world to disk, then push the vanilla stat files to S3 so the
+      # daily export Lambda can read them while the server is stopped. Each step
+      # is best-effort (|| true) so it no-ops when the container is down.
+      docker exec minecraft rcon-cli save-all flush >/dev/null 2>&1 || true
+      aws s3 sync /opt/minecraft/world/stats/        s3://${stats_bucket}/raw/stats/        --only-show-errors || true
+      aws s3 sync /opt/minecraft/world/advancements/ s3://${stats_bucket}/raw/advancements/ --only-show-errors || true
+      aws s3 cp   /opt/minecraft/usercache.json      s3://${stats_bucket}/raw/usercache.json --only-show-errors || true
+
+  - path: /etc/systemd/system/mc-stats-sync.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Sync Minecraft stat files to S3 for the leaderboard export
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/mc-stats/sync_stats.sh
+      StandardOutput=journal
+      StandardError=journal
+
+  - path: /etc/systemd/system/mc-stats-sync.timer
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Sync Minecraft stats to S3 every 5 minutes
+
+      [Timer]
+      OnBootSec=300
+      OnUnitActiveSec=300
+
+      [Install]
+      WantedBy=timers.target
+
 runcmd:
   - |
     set -e
@@ -142,3 +179,5 @@ runcmd:
     systemctl start minecraft
     systemctl enable mc-monitor.timer
     systemctl start mc-monitor.timer
+    systemctl enable mc-stats-sync.timer
+    systemctl start mc-stats-sync.timer

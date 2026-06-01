@@ -53,3 +53,13 @@ variable "whitelist_seed" {
   type        = list(string)
   default     = []
 }
+
+variable "stats_bucket_name" {
+  description = "Name of the stats bucket the on-box mc-stats-sync timer pushes vanilla stat files into."
+  type        = string
+}
+
+variable "stats_bucket_arn" {
+  description = "ARN of the stats bucket, used to scope the instance role's PutObject grant to raw/*."
+  type        = string
+}

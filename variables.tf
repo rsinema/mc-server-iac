@@ -82,3 +82,21 @@ variable "admin_discord_user_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "enzy_base_url" {
+  description = "Base URL of the Enzy API for the stats export. Override to target staging."
+  type        = string
+  default     = "https://api.enzy.co"
+}
+
+variable "stats_export_schedule" {
+  description = "EventBridge schedule expression for the daily stats export. Default 11:00 UTC ≈ early-morning Mountain time."
+  type        = string
+  default     = "cron(0 11 * * ? *)"
+}
+
+variable "stats_export_dry_run" {
+  description = "When true (default), the stats export Lambda logs payloads but does not POST to Enzy. Set false in terraform.tfvars to go live — the first real POST permanently locks the Enzy column set."
+  type        = bool
+  default     = true
+}
