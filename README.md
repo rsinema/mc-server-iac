@@ -119,7 +119,7 @@ Full step-by-step (including the exact OAuth URL format and the command-registra
 
 | Resource                                   | Monthly Cost (est.)              |
 | ------------------------------------------ | -------------------------------- |
-| EC2 `t4g.large` (stopped = no charge)      | ~$0 if stopped most of the month |
+| EC2 `m7g.large` (stopped = no charge)      | ~$0 if stopped most of the month |
 | EBS `gp3` 10 GB                            | ~$1.10                           |
 | Lambda invocations (start/stop/idle-check) | ~$0.05                           |
 | CloudWatch metrics + alarm                 | ~$0.10                           |
