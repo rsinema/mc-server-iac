@@ -9,8 +9,13 @@ output "bucket_arn" {
 }
 
 output "email_map_parameter_name" {
-  description = "SSM parameter holding the UUID→email map; populate via `aws ssm put-parameter --overwrite`"
+  description = "SSM parameter holding the UUID→email map; written by the control Lambda's /mc register"
   value       = aws_ssm_parameter.email_map.name
+}
+
+output "email_map_parameter_arn" {
+  description = "ARN of the UUID→email map parameter (used to scope the control Lambda's SSM grant)"
+  value       = aws_ssm_parameter.email_map.arn
 }
 
 output "export_function_name" {

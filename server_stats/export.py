@@ -119,12 +119,21 @@ def _uuid_from_key(key: str) -> str:
 # ---------------------------------------------------------------------------
 
 def load_email_map(param_name: str) -> dict:
+    """Return {norm_uuid: {"email": str, "name": str}}.
+
+    Accepts both the object form written by the control Lambda's /mc register
+    ({"email": ..., "name": ...}) and legacy bare-string values ("a@b.co").
+    """
     resp = _ssm.get_parameter(Name=param_name)
     raw = json.loads(resp["Parameter"]["Value"] or "{}")
     out = {}
-    for uuid, email in raw.items():
+    for uuid, val in raw.items():
+        if isinstance(val, dict):
+            email, name = val.get("email", ""), val.get("name", "")
+        else:
+            email, name = (val if isinstance(val, str) else ""), ""
         if isinstance(email, str) and "@" in email:
-            out[_norm_uuid(uuid)] = email
+            out[_norm_uuid(uuid)] = {"email": email, "name": name or ""}
         else:
             logger.warning("ignoring invalid email-map entry for uuid=%s", uuid)
     return out
@@ -224,11 +233,12 @@ def compute_rows(today: dict, previous: dict, email_map: dict, usercache: dict,
     skipped_zero = 0
 
     for uuid, cur in today.items():
-        email = email_map.get(uuid)
-        if not email:
+        entry = email_map.get(uuid)
+        if not entry:
             skipped_unmapped += 1
             logger.info("skip unmapped uuid=%s", uuid)
             continue
+        email = entry["email"]
 
         prev = previous.get(uuid)
         if prev is None:
@@ -245,7 +255,7 @@ def compute_rows(today: dict, previous: dict, email_map: dict, usercache: dict,
             "snapshotKey": f"{email}|{date_str}",
             "playerEmail": email,
             "snapshotDate": snapshot_date,
-            "mcUsername": usercache.get(uuid, ""),
+            "mcUsername": usercache.get(uuid) or entry.get("name") or "",
             "creeperKillsGained": str(gained["creeperKills"]),
             "deathsGained": str(gained["deaths"]),
             "diamondsMinedGained": str(gained["diamondsMined"]),

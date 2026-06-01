@@ -309,6 +309,35 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
             "type": 1
           }
         ]
+      },
+      {
+        "name": "register",
+        "description": "Link a Minecraft account to an Enzy email for the stats leaderboard",
+        "type": 2,
+        "options": [
+          {
+            "name": "add",
+            "description": "Register a Minecraft username to an Enzy email",
+            "type": 1,
+            "options": [
+              {"name": "user",  "description": "Mojang username",      "type": 3, "required": true},
+              {"name": "email", "description": "Your @enzy.co email",  "type": 3, "required": true}
+            ]
+          },
+          {
+            "name": "list",
+            "description": "Show current registrations",
+            "type": 1
+          },
+          {
+            "name": "remove",
+            "description": "Remove a registration (admin only)",
+            "type": 1,
+            "options": [
+              {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+            ]
+          }
+        ]
       }
     ]
   }'
@@ -521,12 +550,23 @@ aws secretsmanager put-secret-value \
   --secret-id MCServerInstance-enzy-api-key \
   --secret-string '<enzy-x-secret-token>'
 
-# 2. Populate the UUID→email map (dashed or undashed UUIDs both fine).
-#    Grab UUIDs from s3://<bucket>/raw/usercache.json after the server has run once.
+# 2. Register players — the normal path is the Discord command (no AWS access
+#    needed), which resolves the username to its UUID via Mojang and writes the
+#    map for you:
+#      /mc register add user:<mojang_name> email:<you@enzy.co>
+#      /mc register list                 (show who's registered)
+#      /mc register remove user:<name>   (admin only)
+```
+
+The `/mc register` group requires the slash-command schema to include it — re-run the registration curl in *How to Register / Update Slash Commands* if you added this after the initial setup.
+
+**Manual fallback** (no Discord, e.g. seeding before go-live): write the SSM parameter directly. The value is `{ "<uuid>": {"email": ..., "name": ...} }` (a bare `"<uuid>": "email"` string is also accepted). Grab UUIDs from `s3://<bucket>/raw/usercache.json` after the server has run once; dashed or undashed UUIDs both work.
+
+```bash
 aws ssm put-parameter --overwrite \
   --name /MCServerInstance/stats/player-email-map \
   --type String \
-  --value '{"069a79f4-44e9-4726-a5be-fca90e38aaf5":"riley.sinema@enzy.co"}'
+  --value '{"069a79f4-44e9-4726-a5be-fca90e38aaf5":{"email":"riley.sinema@enzy.co","name":"riley_mc"}}'
 ```
 
 Find the bucket name with `tofu output` or `aws s3 ls | grep stats`.

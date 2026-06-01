@@ -63,11 +63,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "stats" {
   }
 }
 
-# UUID → email mapping, maintained by hand (kept out of git). Seeded empty;
-# ignore_changes means `aws ssm put-parameter` edits are never reverted by apply.
+# UUID → email mapping. Seeded empty and written out-of-band by the control
+# Lambda's /mc register command (read-modify-write); ignore_changes means those
+# edits are never reverted by apply.
 resource "aws_ssm_parameter" "email_map" {
   name        = "/${var.server_name}/stats/player-email-map"
-  description = "JSON {\"<mc-uuid>\": \"<enzy-email>\"} consumed by the stats export Lambda"
+  description = "JSON {\"<mc-uuid>\": {\"email\": \"<enzy-email>\", \"name\": \"<mc-name>\"}} consumed by the stats export Lambda; written by /mc register"
   type        = "String"
   value       = jsonencode({})
 

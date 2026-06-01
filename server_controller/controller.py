@@ -6,6 +6,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 
 import nacl.signing
 import nacl.exceptions
@@ -33,6 +34,16 @@ OPT_SUB_COMMAND_GROUP = 2
 # would be parsed as two commands otherwise.
 MOJANG_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 
+# Mojang public profile API — resolves a username to its canonical UUID/name.
+# Works while the server is stopped (no RCON), so /mc register doesn't need the
+# instance running.
+MOJANG_API = "https://api.mojang.com"
+
+# The Enzy leaderboard joins players by email and only @enzy.co accounts exist
+# there, so reject anything else at registration time rather than store an
+# address that silently never displays.
+ENZY_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@enzy\.co$", re.IGNORECASE)
+
 HELP_TEXT = (
     "**Minecraft Server Commands** — connect at `mc.rsinema.com:25565`\n\n"
     "`/mc start` — spin up the server (~30s for EC2 + ~30s for MC to start).\n"
@@ -42,6 +53,10 @@ HELP_TEXT = (
     "`/mc whitelist add user:<mojang_name>` — add a player to the allowlist.\n"
     "`/mc whitelist remove user:<mojang_name>` — remove a player (admin only).\n"
     "`/mc whitelist list` — show who's whitelisted.\n"
+    "`/mc register add user:<mojang_name> email:<you@enzy.co>` — link your "
+    "Minecraft account to your Enzy email for the stats leaderboard.\n"
+    "`/mc register list` — show who's registered.\n"
+    "`/mc register remove user:<mojang_name>` — drop a registration (admin only).\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
     "someone in the server to run `/mc whitelist add user:<your_name>`."
@@ -67,6 +82,9 @@ COMMAND_REGISTRY = {
     ("whitelist", "add"):    {"ack": "deferred",  "ephemeral": True,  "admin": False},
     ("whitelist", "remove"): {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("whitelist", "list"):   {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("register", "add"):     {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("register", "list"):    {"ack": "deferred",  "ephemeral": True,  "admin": False},
+    ("register", "remove"):  {"ack": "deferred",  "ephemeral": True,  "admin": True},
 }
 
 
@@ -83,6 +101,7 @@ _ec2 = boto3.client("ec2")
 _cloudwatch = boto3.client("cloudwatch")
 _secrets = boto3.client("secretsmanager")
 _lambda = boto3.client("lambda")
+_ssm = boto3.client("ssm")
 
 _discord_public_key_cache: str | None = None
 _rcon_password_cache: str | None = None
@@ -467,6 +486,134 @@ def run_whitelist_list(instance_id: str, rcon_password: str) -> str:
         return f"Failed to list whitelist: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Stats registration (UUID→email map in SSM, consumed by the export Lambda)
+#
+# The export job keys players by Minecraft UUID, but a Discord user only knows
+# their username, so registration resolves username→UUID via the Mojang public
+# API (authoritative, works while the server is stopped). The map value stores
+# {email, name} so /mc register list can show real usernames with no extra
+# Mojang calls; export.py reads the email and treats the name as an mcUsername
+# fallback.
+# ---------------------------------------------------------------------------
+
+def resolve_mojang_uuid(username: str) -> tuple[str, str] | None:
+    """Resolve a Mojang username to (normalized_uuid, canonical_name).
+
+    Returns None if no such account exists. Raises on network/API errors so the
+    caller can distinguish "doesn't exist" from "couldn't check".
+    """
+    url = f"{MOJANG_API}/users/profiles/minecraft/{urllib.parse.quote(username)}"
+    req = urllib.request.Request(url, headers={"User-Agent": DISCORD_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 204):  # unknown username (Mojang has used both)
+            return None
+        raise
+    if not raw:  # 200 with empty body also means "not found"
+        return None
+    data = json.loads(raw)
+    uuid = data.get("id")
+    if not uuid:
+        return None
+    return uuid.replace("-", "").lower(), data.get("name") or username
+
+
+def _load_email_map() -> dict:
+    param = os.environ["PLAYER_EMAIL_MAP_PARAM"]
+    resp = _ssm.get_parameter(Name=param)
+    try:
+        data = json.loads(resp["Parameter"]["Value"] or "{}")
+    except (ValueError, KeyError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_email_map(email_map: dict) -> None:
+    param = os.environ["PLAYER_EMAIL_MAP_PARAM"]
+    _ssm.put_parameter(Name=param, Value=json.dumps(email_map), Type="String", Overwrite=True)
+
+
+def _entry_email(val) -> str:
+    """Read the email from a map value (object form or legacy bare string)."""
+    return val.get("email", "") if isinstance(val, dict) else (val or "")
+
+
+def _entry_name(val) -> str:
+    return val.get("name", "") if isinstance(val, dict) else ""
+
+
+def run_register_add(username: str, email: str) -> str:
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    email = (email or "").strip()
+    if not ENZY_EMAIL_RE.match(email):
+        return f"`{email}` is not a valid `@enzy.co` email address. Use the address tied to your Enzy account."
+
+    try:
+        resolved = resolve_mojang_uuid(username)
+    except Exception as e:
+        logger.warning(f"Mojang lookup failed for {username}: {e}")
+        return "Couldn't reach Mojang to verify that username right now. Try again in a minute."
+    if resolved is None:
+        return f"No Minecraft account named `{username}` was found. Mojang usernames are exact — check the spelling."
+
+    uuid, canonical = resolved
+    email_map = _load_email_map()
+    existed = uuid in email_map
+    email_map[uuid] = {"email": email, "name": canonical}
+    _save_email_map(email_map)
+
+    verb = "Updated registration for" if existed else "Registered"
+    return f"{verb} `{canonical}` → `{email}` for the stats leaderboard."
+
+
+def run_register_list() -> str:
+    email_map = _load_email_map()
+    if not email_map:
+        return "No players are registered yet. Use `/mc register add user:<name> email:<you@enzy.co>` to link your account."
+
+    lines = []
+    for uuid, val in sorted(email_map.items(), key=lambda kv: (_entry_name(kv[1]).lower() or kv[0])):
+        name = _entry_name(val) or "(unknown name)"
+        lines.append(f"{name} -> {_entry_email(val)}")
+    body = "\n".join(lines)
+    return f"**Registered players ({len(lines)})**\n```\n{body}\n```"
+
+
+def run_register_remove(username: str) -> str:
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    email_map = _load_email_map()
+
+    # Match by the stored canonical name first — no network call needed.
+    target_uuid = next(
+        (u for u, v in email_map.items() if _entry_name(v).lower() == username.lower()),
+        None,
+    )
+    # Fall back to resolving the UUID via Mojang (covers legacy string entries
+    # or a player who changed their name since registering).
+    if target_uuid is None:
+        try:
+            resolved = resolve_mojang_uuid(username)
+        except Exception as e:
+            logger.warning(f"Mojang lookup failed for {username}: {e}")
+            return "Couldn't reach Mojang to look up that username. Try again in a minute."
+        if resolved and resolved[0] in email_map:
+            target_uuid = resolved[0]
+
+    if target_uuid is None:
+        return f"`{username}` is not registered."
+
+    removed = email_map.pop(target_uuid)
+    _save_email_map(email_map)
+    return f"Removed `{username}` (`{_entry_email(removed)}`) from leaderboard tracking."
+
+
 def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str,
                    caller_name: str = "Someone", webhook_url: str = "") -> str:
     """Route a parsed command path to its implementation (async worker side)."""
@@ -484,6 +631,12 @@ def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str
         return run_whitelist_remove(instance_id, rcon_password, args.get("user", ""))
     if path == ("whitelist", "list"):
         return run_whitelist_list(instance_id, rcon_password)
+    if path == ("register", "add"):
+        return run_register_add(args.get("user", ""), args.get("email", ""))
+    if path == ("register", "list"):
+        return run_register_list()
+    if path == ("register", "remove"):
+        return run_register_remove(args.get("user", ""))
     return f"Unknown subcommand: `/mc {' '.join(path)}`. Try `/mc help`."
 
 

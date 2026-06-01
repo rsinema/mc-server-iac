@@ -30,7 +30,7 @@ Constraints that shape everything below:
 | Data staging | On-box `mc-stats-sync` timer (every 5 min) + `ExecStopPost` end-of-session flush on `minecraft.service` | Decouples sync from the 30s-timeout control Lambda; crash-resilient; the stop hook closes the short-session gap. (Chose this over stop-Lambda SSM orchestration.) |
 | Delta model | Job computes daily deltas vs. stored cumulative; Enzy sums | Enzy can only SUM, not subtract two snapshots. |
 | State store | Previous-cumulative JSON in the stats S3 bucket | Simple, single source; saved only after a successful POST. |
-| Player → email map | JSON **SSM Parameter** | Editable without a deploy; keeps coworker emails out of the (public) git repo. |
+| Player → email map | JSON **SSM Parameter**, written by `/mc register` | Players self-serve via Discord (resolves username→UUID via Mojang); editable without a deploy; keeps coworker emails out of the (public) git repo. |
 | Lambda deps | **None** beyond stdlib + boto3 | Dropping XP means no NBT parsing; mirrors `server_controller`'s `urllib`-only style. |
 
 ---
@@ -158,7 +158,7 @@ EventBridge cron (~`cron(0 11 * * ? *)` — early MT) → Lambda:
 | `aws_s3_bucket` `<server>-stats-<suffix>` | Staging (`raw/`) + delta state (`state/`). Public access blocked, versioning on, lifecycle expires noncurrent `raw/` versions after 7 days. |
 | `aws_lambda_function` export | Python 3.11, arm64, 120s timeout, `archive_file` zip — mirrors `modules/control`. stdlib + boto3 only, no vendored deps. Ships `DRY_RUN=1`. |
 | `aws_cloudwatch_event_rule` + target + permission | Daily cron trigger (`var.stats_export_schedule`). |
-| `aws_ssm_parameter` `/<server>/stats/player-email-map` | JSON `{ "<uuid>": "email", ... }`. Seeded empty with `ignore_changes = [value]`; edited by hand, no deploy to add a player. |
+| `aws_ssm_parameter` `/<server>/stats/player-email-map` | JSON `{ "<uuid>": {"email": ..., "name": ...}, ... }` (legacy bare-string values still accepted). Seeded empty with `ignore_changes = [value]`; written by the control Lambda's `/mc register`, no deploy to add a player. |
 | IAM role/policy (Lambda) | `s3:GetObject`/`PutObject`/`ListBucket` on the bucket, `secretsmanager:GetSecretValue` on the Enzy secret, `ssm:GetParameter` on the map, logs. |
 
 The Enzy secret (`aws_secretsmanager_secret` `<server>-enzy-api-key`) is created in the **root** module (alongside the rcon/Discord secrets) and its ARN passed into `modules/stats`; the value is populated out-of-band (§ runbook).
@@ -169,9 +169,10 @@ The Enzy secret (`aws_secretsmanager_secret` `<server>-enzy-api-key`) is created
 |---|---|
 | `modules/compute` (instance role) | Add `s3:PutObject` on `<bucket>/raw/*` and `s3:ListBucket` (prefix `raw/*`). SSM core already attached. |
 | `modules/compute/scripts/compute_setup.sh.tpl` | New `mc-stats-sync` service + 5-min timer + `sync_stats.sh`; `stats_bucket` threaded through `templatefile`. |
-| root `main.tf` / `variables.tf` | `aws_secretsmanager_secret.enzy_api_key`, `module "stats"`, wire bucket name/arn into `module.compute`; new `enzy_base_url` + `stats_export_schedule` vars. |
+| root `main.tf` / `variables.tf` | `aws_secretsmanager_secret.enzy_api_key`, `module "stats"`, wire bucket name/arn into `module.compute`; wire the email-map param name/arn into `module.control`; new `enzy_base_url` + `stats_export_schedule` vars. |
+| `modules/control` + `server_controller/controller.py` | `/mc register add\|list\|remove` subcommand group: resolves username→UUID via the Mojang API and read-modify-writes the email-map SSM parameter. Adds `ssm:GetParameter`/`PutParameter` (scoped to the param) and a `PLAYER_EMAIL_MAP_PARAM` env var. `add`/`list` are open; `remove` is admin-gated. |
 
-The control Lambda (`server_controller/controller.py`) and `modules/control` are **unchanged** — `handle_stop_action` still only stops the instance.
+The map value carries the canonical Mojang name alongside the email, so `/mc register list` shows usernames with no extra Mojang calls and the export uses it as an `mcUsername` fallback. SSM has no compare-and-swap, so two simultaneous registrations could lose an update — acceptable at this scale (a few players, ~2x/week); the String parameter (standard tier, ~4 KB) holds ~50 players.
 
 ### Config / secrets (export Lambda env)
 
