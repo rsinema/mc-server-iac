@@ -27,7 +27,7 @@ Constraints that shape everything below:
 | `xpGained` | **Dropped** | Vanilla has no usable lifetime-XP stat (`XpTotal` resets on death; not in stats files). |
 | Cadence | Daily EventBridge cron, reads S3 snapshot | Decoupled from server uptime; matches the spec's state/idempotency model. |
 | Cron time | Early **Mountain** morning (~11:00 UTC) | Utah players; avoids running during peak play (3am UTC ≈ 8–9pm MT) when the S3 snapshot is stale and the calendar date is wrong. |
-| Data staging | On-box `mc-stats-sync` systemd timer syncs to S3 every 5 min | Decouples sync from the 30s-timeout control Lambda; crash-resilient; lets the daily job read S3 while the instance is off. (Chose this over stop-Lambda SSM orchestration.) |
+| Data staging | On-box `mc-stats-sync` timer (every 5 min) + `ExecStopPost` end-of-session flush on `minecraft.service` | Decouples sync from the 30s-timeout control Lambda; crash-resilient; the stop hook closes the short-session gap. (Chose this over stop-Lambda SSM orchestration.) |
 | Delta model | Job computes daily deltas vs. stored cumulative; Enzy sums | Enzy can only SUM, not subtract two snapshots. |
 | State store | Previous-cumulative JSON in the stats S3 bucket | Simple, single source; saved only after a successful POST. |
 | Player → email map | JSON **SSM Parameter** | Editable without a deploy; keeps coworker emails out of the (public) git repo. |
@@ -109,7 +109,7 @@ Stat counters come from `world/stats/<uuid>.json` (`{"stats": {"minecraft:custom
                               Enzy leaderboard (workspace 52)
 ```
 
-(The idle-stop flow is unchanged: `handle_stop_action` still just stops the instance. Because the timer runs every 5 min and Paper flushes stats on player logout, S3 already holds the final session state well before the 15-min idle-stop fires.)
+(The idle-stop flow is unchanged: `handle_stop_action` still just stops the instance. The periodic timer keeps S3 fresh while the server is up, and the `ExecStopPost` hook (§4.1) flushes the final state when the service stops — so even a short session lands in S3.)
 
 ### 4.1 On-box sync (`mc-stats-sync` timer)
 
@@ -125,6 +125,10 @@ aws s3 cp   /opt/minecraft/usercache.json      s3://<bucket>/raw/usercache.json
 Every step is best-effort (`|| true`), so it no-ops when the container is down. The instance role gets a scoped `s3:PutObject` on `<bucket>/raw/*` (and `ListBucket` with a `raw/*` prefix condition) — see `modules/compute/main.tf`.
 
 **Why a timer, not the stop Lambda:** the control Lambda's timeout is 30s and `run_start` already races it; bolting a synchronous SSM send-and-poll onto the stop path would be fragile and would only capture data on a *clean* idle-stop. A periodic on-box sync is decoupled, crash-resilient, and costs only a few KB of S3 PUTs per session.
+
+**End-of-session flush (`ExecStopPost`).** The 5-minute timer can miss a session that ends before its first tick (short sessions, or a stop landing right at a boundary — exactly what we hit in testing). To close that gap, `minecraft.service` runs the same sync script as `ExecStopPost`: after `ExecStop=docker stop minecraft` (Paper saves stats to disk on SIGTERM), the hook pushes the final state to S3. Because the unit is `After=network-online.target`, systemd tears it down *before* networking on shutdown, so the `aws s3 sync` still has a live network. It's wrapped in `timeout 60` with a leading `-` so a slow or failed sync can't stall shutdown.
+
+This is **best-effort**, not a guarantee: a graceful `ec2:StopInstances` (both idle-stop and `/mc stop`) runs it, but a forced termination won't — and that's fine, because stats are cumulative, so any un-synced tail is picked up by the next session's sync. The hook improves freshness and short-session capture; it isn't load-bearing for correctness.
 
 **Deployment note:** `modules/compute` sets `user_data_replace_on_change = true`, so adding this timer **replaces the EC2 instance** on the next apply. World data survives (it lives on the separate EBS data volume from `modules/storage`, remounted by the runcmd). Apply during a quiet window.
 

@@ -33,6 +33,11 @@ write_files:
           -p 25575:25575 \
           itzg/minecraft-server
       ExecStop=/usr/bin/docker stop minecraft
+      # End-of-session flush: after the container stops (Paper saves stats on
+      # SIGTERM), push the final state to S3. Runs before network teardown
+      # since this unit is After=network-online.target. Best-effort — the
+      # leading '-' and timeout keep a slow/failed sync from stalling shutdown.
+      ExecStopPost=-/usr/bin/timeout 60 /opt/mc-stats/sync_stats.sh
       StandardOutput=journal
       StandardError=journal
 
@@ -87,10 +92,21 @@ write_files:
       # Flush the world to disk, then push the vanilla stat files to S3 so the
       # daily export Lambda can read them while the server is stopped. Each step
       # is best-effort (|| true) so it no-ops when the container is down.
+      #
+      # This Paper build stores player data under world/players/ (stats,
+      # advancements) rather than the vanilla world/stats + world/advancements.
+      # Prefer the players/ layout, fall back to vanilla, so we're robust to
+      # either and to a future world reseed/config change.
       docker exec minecraft rcon-cli save-all flush >/dev/null 2>&1 || true
-      aws s3 sync /opt/minecraft/world/stats/        s3://${stats_bucket}/raw/stats/        --only-show-errors || true
-      aws s3 sync /opt/minecraft/world/advancements/ s3://${stats_bucket}/raw/advancements/ --only-show-errors || true
-      aws s3 cp   /opt/minecraft/usercache.json      s3://${stats_bucket}/raw/usercache.json --only-show-errors || true
+
+      STATS_DIR=/opt/minecraft/world/players/stats
+      [ -d "$STATS_DIR" ] || STATS_DIR=/opt/minecraft/world/stats
+      ADV_DIR=/opt/minecraft/world/players/advancements
+      [ -d "$ADV_DIR" ] || ADV_DIR=/opt/minecraft/world/advancements
+
+      aws s3 sync "$STATS_DIR/" s3://${stats_bucket}/raw/stats/        --only-show-errors || true
+      aws s3 sync "$ADV_DIR/"   s3://${stats_bucket}/raw/advancements/ --only-show-errors || true
+      aws s3 cp /opt/minecraft/usercache.json s3://${stats_bucket}/raw/usercache.json --only-show-errors || true
 
   - path: /etc/systemd/system/mc-stats-sync.service
     permissions: '0644'
