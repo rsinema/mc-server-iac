@@ -3,7 +3,8 @@
 #
 # Owns the S3 bucket that the EC2 instance syncs vanilla stat files into (raw/),
 # the delta-state object (state/), the daily export Lambda, its EventBridge
-# schedule, and the UUID→email mapping (SSM parameter, hand-maintained).
+# schedule, the UUID→email mapping (SSM parameter, written by /mc register), and
+# the push-enabled SSM toggle (runtime on/off for the Enzy POST).
 #
 # The EC2 instance writes to this bucket; that PutObject grant lives on the
 # instance role in modules/compute (which receives this bucket's ARN), so this
@@ -81,6 +82,25 @@ resource "aws_ssm_parameter" "email_map" {
   }
 }
 
+# Runtime on/off switch for the Enzy POST. The export Lambda reads this on every
+# run, so it can be toggled with `aws ssm put-parameter` with no redeploy. Seeded
+# from var.dry_run (push enabled = NOT dry_run) on first create; ignore_changes
+# then leaves the live value to the toggle command, never reverted by apply.
+resource "aws_ssm_parameter" "push_enabled" {
+  name        = "/${var.server_name}/stats/push-enabled"
+  description = "true = export Lambda POSTs to Enzy; false = dry-run (compute + log only). Toggle at runtime with aws ssm put-parameter."
+  type        = "String"
+  value       = var.dry_run ? "false" : "true"
+
+  tags = {
+    Project = "mc-server"
+  }
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Export Lambda — IAM
 # ---------------------------------------------------------------------------
@@ -129,10 +149,13 @@ resource "aws_iam_policy" "export_lambda" {
         Resource = var.enzy_secret_arn
       },
       {
-        Sid      = "ReadEmailMap"
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter"]
-        Resource = aws_ssm_parameter.email_map.arn
+        Sid    = "ReadStatsParams"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          aws_ssm_parameter.email_map.arn,
+          aws_ssm_parameter.push_enabled.arn
+        ]
       },
       {
         Sid    = "CloudWatchLogs"
@@ -157,9 +180,9 @@ resource "aws_iam_role_policy_attachment" "export_lambda" {
 # Export Lambda — function
 #
 # Pure stdlib + boto3 (provided by the runtime), so the source dir zips with no
-# vendored dependencies. DRY_RUN defaults to "1": the first deploys compute and
-# log the payload but do NOT POST, so the column set is not locked until you
-# deliberately flip DRY_RUN to "0" after eyeballing a dry run.
+# vendored dependencies. Whether it actually POSTs is read at runtime from the
+# push-enabled SSM parameter (seeded dry-run), so going live / pausing is an
+# `aws ssm put-parameter` toggle, not a redeploy.
 # ---------------------------------------------------------------------------
 
 data "archive_file" "export_zip" {
@@ -188,7 +211,7 @@ resource "aws_lambda_function" "export" {
       ENZY_SECRET_ARN        = var.enzy_secret_arn
       ENZY_BASE_URL          = var.enzy_base_url
       PLAYER_EMAIL_MAP_PARAM = aws_ssm_parameter.email_map.name
-      DRY_RUN                = var.dry_run ? "1" : "0"
+      PUSH_ENABLED_PARAM     = aws_ssm_parameter.push_enabled.name
     }
   }
 }

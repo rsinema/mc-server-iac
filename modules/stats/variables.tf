@@ -21,7 +21,7 @@ variable "schedule_expression" {
 }
 
 variable "dry_run" {
-  description = "When true, the export Lambda computes and logs the payload but does NOT POST to Enzy. Keep true until you've eyeballed a dry run — the first real POST permanently locks the Enzy column set."
+  description = "Seed for the runtime push toggle ONLY (the push-enabled SSM parameter is created from this once, then ignore_changes leaves it to the toggle). true = seed dry-run/off, false = seed live/on. After the parameter exists, flip it at runtime with `aws ssm put-parameter` — changing this variable no longer has any effect. The first real POST permanently locks the Enzy column set."
   type        = bool
   default     = true
 }

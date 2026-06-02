@@ -573,24 +573,31 @@ Find the bucket name with `tofu output` or `aws s3 ls | grep stats`.
 
 ### Dry run → go live
 
+Whether the Lambda actually POSTs is controlled at **runtime** by the SSM parameter `/MCServerInstance/stats/push-enabled` (`true` = POST, `false` = dry-run). The Lambda reads it on every run, so flipping it takes effect on the next run with **no `tofu apply`**. It is seeded from `var.stats_export_dry_run` the first time the parameter is created; after that the toggle is the source of truth and changing the variable has no effect (the resource has `ignore_changes = [value]`).
+
 ```bash
-# Dry run (the deployed default — stats_export_dry_run = true): compute + log, no POST.
+# Dry run (default): compute + log, no POST.
 aws lambda invoke --function-name MCServerInstance-stats-export \
-  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/stats.json
+  --region us-west-2 --payload '{}' --cli-binary-format raw-in-base64-out /tmp/stats.json
 cat /tmp/stats.json
-# Then inspect the would-be payload in CloudWatch Logs (look for "DRY_RUN — would POST").
+# Inspect the would-be payload in CloudWatch Logs (look for "DRY_RUN — would POST").
 ```
 
-When the payload looks right, go live through IaC (not a CLI env override, which would drift):
-
-```hcl
-# terraform.tfvars
-stats_export_dry_run = false
-```
+When the payload looks right, **go live by flipping the toggle** (the next run does the first, column-locking POST — see the baseline note below):
 
 ```bash
-tofu apply   # flips DRY_RUN to "0"; the next run does the first, column-locking POST
+aws ssm put-parameter --overwrite --region us-west-2 \
+  --name /MCServerInstance/stats/push-enabled --type String --value true
 ```
+
+To **pause** pushing again, set it back to `false` — no apply either way:
+
+```bash
+aws ssm put-parameter --overwrite --region us-west-2 \
+  --name /MCServerInstance/stats/push-enabled --type String --value false
+```
+
+> **Baseline:** with no `state/previous-cumulative.json` yet, the first live run records a baseline and posts **0 rows** (no column lock). The first *non-empty* POST — a later run where someone gained a tracked stat — is what permanently locks the column set. A failed POST (e.g. bad token) does not lock anything.
 
 ### Verify
 

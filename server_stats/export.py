@@ -199,6 +199,23 @@ def read_cumulative(bucket: str) -> dict:
     return players
 
 
+def push_enabled(param_name: str | None) -> bool:
+    """Runtime on/off switch for the Enzy POST, read from SSM each run so it can
+    be toggled with `aws ssm put-parameter` (no redeploy).
+
+    Fail-safe: a missing/unreadable parameter defaults to OFF (dry-run), so a
+    misconfiguration never silently starts POSTing — and locking the column set.
+    """
+    if not param_name:
+        return False
+    try:
+        raw = _ssm.get_parameter(Name=param_name)["Parameter"]["Value"]
+    except Exception as e:  # noqa: BLE001 — toggle read must never crash the run
+        logger.warning("could not read push toggle %s (%s) — defaulting to dry-run", param_name, e)
+        return False
+    return raw.strip().lower() in ("1", "true", "on", "yes", "enabled")
+
+
 def load_state(bucket: str) -> dict:
     data = _get_json(bucket, STATE_KEY)
     return data if isinstance(data, dict) else {}
@@ -328,7 +345,7 @@ def lambda_handler(event, context):
     secret_arn = os.environ["ENZY_SECRET_ARN"]
     base_url = os.environ.get("ENZY_BASE_URL", "https://api.enzy.co")
     param_name = os.environ["PLAYER_EMAIL_MAP_PARAM"]
-    dry_run = os.environ.get("DRY_RUN", "0") == "1"
+    dry_run = not push_enabled(os.environ.get("PUSH_ENABLED_PARAM"))
 
     local = mountain_today()
     date_str = local.strftime("%Y-%m-%d")

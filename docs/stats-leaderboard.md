@@ -1,6 +1,6 @@
 # Stats Leaderboard Export — Design Document
 
-**Status:** Implemented — `modules/stats/` + `server_stats/`; export Lambda ships with `DRY_RUN=1` until the first deliberate POST
+**Status:** Implemented — `modules/stats/` + `server_stats/`; export defaults to dry-run, gated by the runtime `push-enabled` SSM toggle until the first deliberate POST
 **Owner:** @rsinema
 **Last updated:** 2026-05-31
 **Related:** [`minecraft-push-job-specs.md`](../minecraft-push-job-specs.md) (Enzy push-job contract)
@@ -156,7 +156,8 @@ EventBridge cron (~`cron(0 11 * * ? *)` — early MT) → Lambda:
 | Resource | Purpose |
 |---|---|
 | `aws_s3_bucket` `<server>-stats-<suffix>` | Staging (`raw/`) + delta state (`state/`). Public access blocked, versioning on, lifecycle expires noncurrent `raw/` versions after 7 days. |
-| `aws_lambda_function` export | Python 3.11, arm64, 120s timeout, `archive_file` zip — mirrors `modules/control`. stdlib + boto3 only, no vendored deps. Ships `DRY_RUN=1`. |
+| `aws_lambda_function` export | Python 3.11, arm64, 120s timeout, `archive_file` zip — mirrors `modules/control`. stdlib + boto3 only, no vendored deps. POST gated by the runtime `push-enabled` toggle (seeded dry-run). |
+| `aws_ssm_parameter` `/<server>/stats/push-enabled` | Runtime on/off switch for the POST (`true`/`false`). Read by the Lambda every run; toggle with `aws ssm put-parameter`, no redeploy. Seeded from `var.stats_export_dry_run`, `ignore_changes = [value]`. |
 | `aws_cloudwatch_event_rule` + target + permission | Daily cron trigger (`var.stats_export_schedule`). |
 | `aws_ssm_parameter` `/<server>/stats/player-email-map` | JSON `{ "<uuid>": {"email": ..., "name": ...}, ... }` (legacy bare-string values still accepted). Seeded empty with `ignore_changes = [value]`; written by the control Lambda's `/mc register`, no deploy to add a player. |
 | IAM role/policy (Lambda) | `s3:GetObject`/`PutObject`/`ListBucket` on the bucket, `secretsmanager:GetSecretValue` on the Enzy secret, `ssm:GetParameter` on the map, logs. |
@@ -182,7 +183,7 @@ The map value carries the canonical Mojang name alongside the email, so `/mc reg
 | `ENZY_BASE_URL` | Lambda env | Default `https://api.enzy.co`; allows staging. |
 | `STATS_BUCKET` | Lambda env | Bucket name. |
 | `PLAYER_EMAIL_MAP_PARAM` | Lambda env → SSM Parameter | UUID → email JSON. |
-| `DRY_RUN` | Lambda env | `"1"` = compute + log payload, no POST (default). Flip to `"0"` to go live. |
+| `PUSH_ENABLED_PARAM` | Lambda env → SSM Parameter | Name of the runtime on/off toggle (`/<server>/stats/push-enabled`). Read every run: `true` = POST, anything else = dry-run (fail-safe). Toggle with `aws ssm put-parameter` — no redeploy. Seeded from `var.stats_export_dry_run`, then `ignore_changes`. |
 
 ---
 
@@ -267,7 +268,7 @@ Two consecutive days must yield **two distinct rows per player** (different `sna
   - `load_state()` / `save_state()` → `state/previous-cumulative.json`.
   - `compute_rows(today, previous, email_map, usercache, date_str, snapshot_date)` → 9-string-column rows; first-obs → baseline-only, skips zero-delta & unmapped, 255-byte guard.
   - `post_to_enzy(rows)` → `urllib` POST, 3× backoff on 5xx/network, no retry on auth/validation failure.
-  - `lambda_handler`: resolve identity → read → compute → (DRY_RUN logs payload) → post → save-on-success → log counts.
+  - `lambda_handler`: resolve identity → read → compute → (dry-run logs payload) → post → save-on-success → log counts. Dry-run is `not push_enabled()`, read from the `push-enabled` SSM toggle each run.
 - **On-box sync** — `mc-stats-sync` systemd service + timer in `compute_setup.sh.tpl`; instance role `PutObject`/`ListBucket` on the bucket.
 - **Terraform** — `modules/stats/` (bucket, Lambda, schedule, IAM, SSM param); root creates the Enzy secret and wires the bucket name/arn into `modules/compute`.
 - **Tests** — pure functions verified locally with fixtures (DST boundaries, distance/achievement math, delta flooring, first-obs/zero/unmapped handling, 9-column string output, state carry-forward).

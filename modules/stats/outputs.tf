@@ -18,6 +18,11 @@ output "email_map_parameter_arn" {
   value       = aws_ssm_parameter.email_map.arn
 }
 
+output "push_enabled_parameter_name" {
+  description = "SSM parameter that toggles the Enzy POST on/off at runtime (aws ssm put-parameter --value true|false, no redeploy)"
+  value       = aws_ssm_parameter.push_enabled.name
+}
+
 output "export_function_name" {
   description = "Name of the stats export Lambda (for manual/dry-run invocation)"
   value       = aws_lambda_function.export.function_name
