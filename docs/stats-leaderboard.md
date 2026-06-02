@@ -140,7 +140,7 @@ EventBridge cron (~`cron(0 11 * * ? *)` — early MT) → Lambda:
 2. Read every `raw/stats/<uuid>.json` and `raw/advancements/<uuid>.json`; reduce to cumulative `{creeperKills, deaths, diamondsMined, distanceMeters, achievements}` per player.
 3. Load `state/previous-cumulative.json`.
 4. For each mapped player: `gained = max(0, today − previous)` per stat.
-   - **Skip unmapped players** (no email) — logged, never posted with a null email.
+   - **Skip unmapped players** (no email) — logged, never posted with a null email. Their baseline is **not advanced** while unmapped, so a seeded/zero baseline is preserved and their full history dumps on the first run after they register (rather than being silently advanced to current cumulative).
    - **Skip zero-delta players** — no row when nothing changed (a no-play day produces no rows, consistent with "missed day = no row").
    - **First observation** (no prior state): record baseline, emit all-zero gains → effectively skipped. All-time totals therefore count gains since tracking began. **Exception:** players added via `/mc whitelist add` or `/mc register add` get a **zero baseline pre-seeded** by the control Lambda (seed-if-absent), so their very first session counts as a real delta instead of being absorbed. Players who already had stats when first observed (no pre-seed) keep the clean from-today baseline.
 5. Build the row array (9 string columns each; truncate/skip any value >255 bytes).

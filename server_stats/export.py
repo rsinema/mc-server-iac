@@ -240,10 +240,13 @@ def compute_rows(today: dict, previous: dict, email_map: dict, usercache: dict,
 
     Returns (rows, new_state, skipped_unmapped, skipped_zero).
     """
-    # Carry every prior baseline forward, then overlay today's cumulative so a
-    # player whose file is briefly missing doesn't lose their baseline.
+    # Carry every prior baseline forward. We only advance a player's baseline
+    # once they're MAPPED — an unmapped player's seeded/zero baseline is kept
+    # as-is so their full history dumps on the first run after they register,
+    # instead of being silently advanced to their current cumulative (which
+    # would lose all pre-registration data). A mapped player whose file is
+    # briefly missing keeps their carried-forward baseline.
     new_state = dict(previous)
-    new_state.update(today)
 
     rows = []
     skipped_unmapped = 0
@@ -256,6 +259,7 @@ def compute_rows(today: dict, previous: dict, email_map: dict, usercache: dict,
             logger.info("skip unmapped uuid=%s", uuid)
             continue
         email = entry["email"]
+        new_state[uuid] = cur  # advance baseline only for tracked (mapped) players
 
         prev = previous.get(uuid)
         if prev is None:
