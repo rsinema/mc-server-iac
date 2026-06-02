@@ -74,6 +74,15 @@ resource "aws_iam_policy" "controller_lambda" {
           "ssm:PutParameter"
         ]
         Resource = var.email_map_parameter_arn
+      },
+      {
+        Sid    = "StatsBaselineSeed"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ]
+        Resource = "${var.stats_bucket_arn}/state/*"
       }
     ]
   })
@@ -107,6 +116,7 @@ resource "aws_lambda_function" "server_controller" {
       IDLE_STOP_ALARM_NAME           = var.idle_stop_alarm_name
       ADMIN_DISCORD_USER_IDS         = join(",", var.admin_discord_user_ids)
       PLAYER_EMAIL_MAP_PARAM         = var.email_map_parameter_name
+      STATS_BUCKET                   = var.stats_bucket_name
     }
   }
 }

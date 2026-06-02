@@ -45,3 +45,13 @@ variable "email_map_parameter_arn" {
   description = "ARN of the UUID→email map SSM parameter, used to scope the controller Lambda's SSM grant."
   type        = string
 }
+
+variable "stats_bucket_name" {
+  description = "Name of the stats export bucket; /mc register and /mc whitelist add seed a zero baseline into its state/ object."
+  type        = string
+}
+
+variable "stats_bucket_arn" {
+  description = "ARN of the stats export bucket, used to scope the controller Lambda's state-object read/write grant."
+  type        = string
+}

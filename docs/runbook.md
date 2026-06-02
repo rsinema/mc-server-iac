@@ -560,6 +560,8 @@ aws secretsmanager put-secret-value \
 
 The `/mc register` group requires the slash-command schema to include it — re-run the registration curl in *How to Register / Update Slash Commands* if you added this after the initial setup.
 
+**Baseline auto-seeding:** `/mc whitelist add` and `/mc register add` both seed a **zero baseline** for the player into `state/previous-cumulative.json` (seed-if-absent — an existing baseline is never reset). This makes a new player's first session count as a real delta instead of being silently absorbed as their baseline. Players who already had stats when first observed (not seeded via these commands) keep the clean from-today baseline. To do it by hand, add a `{"creeperKills":0,"deaths":0,"diamondsMined":0,"distanceMeters":0,"achievements":0}` entry for the normalized (undashed, lowercase) UUID to that state object.
+
 **Manual fallback** (no Discord, e.g. seeding before go-live): write the SSM parameter directly. The value is `{ "<uuid>": {"email": ..., "name": ...} }` (a bare `"<uuid>": "email"` string is also accepted). Grab UUIDs from `s3://<bucket>/raw/usercache.json` after the server has run once; dashed or undashed UUIDs both work.
 
 ```bash

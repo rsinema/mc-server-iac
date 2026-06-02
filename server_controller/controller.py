@@ -102,6 +102,14 @@ _cloudwatch = boto3.client("cloudwatch")
 _secrets = boto3.client("secretsmanager")
 _lambda = boto3.client("lambda")
 _ssm = boto3.client("ssm")
+_s3 = boto3.client("s3")
+
+# Stats delta state in the export bucket. Seeding a zero baseline here when a new
+# player is added makes their first session count, instead of being silently
+# absorbed as their baseline by the export's first-observation rule. Keys/fields
+# must match server_stats/export.py (STATE_KEY, STAT_FIELDS, normalized UUIDs).
+STATS_STATE_KEY = "state/previous-cumulative.json"
+STAT_FIELDS = ("creeperKills", "deaths", "diamondsMined", "distanceMeters", "achievements")
 
 _discord_public_key_cache: str | None = None
 _rcon_password_cache: str | None = None
@@ -454,7 +462,19 @@ def run_whitelist_add(instance_id: str, rcon_password: str, username: str) -> st
         return f"Failed to add `{username}` to whitelist: {e}"
 
     stripped = output.strip() if output else ""
-    return f"Whitelisted `{username}`." + (f"\n```\n{stripped}\n```" if stripped else "")
+    msg = f"Whitelisted `{username}`." + (f"\n```\n{stripped}\n```" if stripped else "")
+
+    # Seed a zero stats baseline (best-effort) so this new player's stats count
+    # from now. Server-down can't happen here (RCON just succeeded); a Mojang
+    # outage just skips the seed — the export would baseline them on first sight.
+    try:
+        resolved = resolve_mojang_uuid(username)
+    except Exception as e:
+        logger.warning(f"Mojang lookup failed seeding baseline for {username}: {e}")
+        resolved = None
+    if resolved and seed_zero_baseline(resolved[0]) == "seeded":
+        msg += "\nStat tracking baseline set — their stats count from now (register them with `/mc register add` to appear on the leaderboard)."
+    return msg
 
 
 def run_whitelist_remove(instance_id: str, rcon_password: str, username: str) -> str:
@@ -536,6 +556,43 @@ def _save_email_map(email_map: dict) -> None:
     _ssm.put_parameter(Name=param, Value=json.dumps(email_map), Type="String", Overwrite=True)
 
 
+def seed_zero_baseline(uuid: str) -> str:
+    """Seed a zero stats baseline for `uuid` in the export's delta state, so the
+    player's stats count from now rather than having their first session absorbed
+    as the baseline.
+
+    Seed-if-absent: an existing baseline is never overwritten (re-adding a player
+    must not reset their accrued totals to zero and dump a fake delta). Returns
+    "seeded", "exists", or "skipped". Best-effort — callers ignore failures so
+    whitelisting/registration still succeed.
+    """
+    bucket = os.environ.get("STATS_BUCKET")
+    if not bucket or not uuid:
+        return "skipped"
+    try:
+        try:
+            obj = _s3.get_object(Bucket=bucket, Key=STATS_STATE_KEY)
+            state = json.loads(obj["Body"].read() or b"{}")
+            if not isinstance(state, dict):
+                state = {}
+        except _s3.exceptions.NoSuchKey:
+            state = {}
+        if uuid in state:
+            return "exists"
+        state[uuid] = {f: 0 for f in STAT_FIELDS}
+        _s3.put_object(
+            Bucket=bucket,
+            Key=STATS_STATE_KEY,
+            Body=json.dumps(state).encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("seeded zero stats baseline for uuid=%s", uuid)
+        return "seeded"
+    except Exception as e:
+        logger.warning("baseline seed failed for uuid=%s: %s", uuid, e)
+        return "skipped"
+
+
 def _entry_email(val) -> str:
     """Read the email from a map value (object form or legacy bare string)."""
     return val.get("email", "") if isinstance(val, dict) else (val or "")
@@ -567,8 +624,15 @@ def run_register_add(username: str, email: str) -> str:
     email_map[uuid] = {"email": email, "name": canonical}
     _save_email_map(email_map)
 
+    # Seed a zero baseline (if absent) so a brand-new player's stats count from
+    # now rather than being absorbed as their first-observation baseline.
+    seeded = seed_zero_baseline(uuid) == "seeded"
+
     verb = "Updated registration for" if existed else "Registered"
-    return f"{verb} `{canonical}` → `{email}` for the stats leaderboard."
+    msg = f"{verb} `{canonical}` → `{email}` for the stats leaderboard."
+    if seeded:
+        msg += " Stat tracking baseline set — stats count from now."
+    return msg
 
 
 def run_register_list() -> str:

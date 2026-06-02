@@ -111,6 +111,8 @@ module "control" {
   admin_discord_user_ids         = var.admin_discord_user_ids
   email_map_parameter_name       = module.stats.email_map_parameter_name
   email_map_parameter_arn        = module.stats.email_map_parameter_arn
+  stats_bucket_name              = module.stats.bucket_name
+  stats_bucket_arn               = module.stats.bucket_arn
 }
 
 # DNS module

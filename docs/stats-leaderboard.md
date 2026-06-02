@@ -142,7 +142,7 @@ EventBridge cron (~`cron(0 11 * * ? *)` — early MT) → Lambda:
 4. For each mapped player: `gained = max(0, today − previous)` per stat.
    - **Skip unmapped players** (no email) — logged, never posted with a null email.
    - **Skip zero-delta players** — no row when nothing changed (a no-play day produces no rows, consistent with "missed day = no row").
-   - **First observation** (no prior state): record baseline, emit all-zero gains → effectively skipped. All-time totals therefore count gains since tracking began.
+   - **First observation** (no prior state): record baseline, emit all-zero gains → effectively skipped. All-time totals therefore count gains since tracking began. **Exception:** players added via `/mc whitelist add` or `/mc register add` get a **zero baseline pre-seeded** by the control Lambda (seed-if-absent), so their very first session counts as a real delta instead of being absorbed. Players who already had stats when first observed (no pre-seed) keep the clean from-today baseline.
 5. Build the row array (9 string columns each; truncate/skip any value >255 bytes).
 6. POST to Enzy with retry/backoff (see §6, §7).
 7. **On success only**, write the new cumulative back to `state/previous-cumulative.json`. On failure, leave state untouched so the next run re-diffs against last-good (the next delta spans the gap — acceptable).
@@ -170,8 +170,8 @@ The Enzy secret (`aws_secretsmanager_secret` `<server>-enzy-api-key`) is created
 |---|---|
 | `modules/compute` (instance role) | Add `s3:PutObject` on `<bucket>/raw/*` and `s3:ListBucket` (prefix `raw/*`). SSM core already attached. |
 | `modules/compute/scripts/compute_setup.sh.tpl` | New `mc-stats-sync` service + 5-min timer + `sync_stats.sh`; `stats_bucket` threaded through `templatefile`. |
-| root `main.tf` / `variables.tf` | `aws_secretsmanager_secret.enzy_api_key`, `module "stats"`, wire bucket name/arn into `module.compute`; wire the email-map param name/arn into `module.control`; new `enzy_base_url` + `stats_export_schedule` vars. |
-| `modules/control` + `server_controller/controller.py` | `/mc register add\|list\|remove` subcommand group: resolves username→UUID via the Mojang API and read-modify-writes the email-map SSM parameter. Adds `ssm:GetParameter`/`PutParameter` (scoped to the param) and a `PLAYER_EMAIL_MAP_PARAM` env var. `add`/`list` are open; `remove` is admin-gated. |
+| root `main.tf` / `variables.tf` | `aws_secretsmanager_secret.enzy_api_key`, `module "stats"`, wire bucket name/arn into `module.compute`; wire the email-map param name/arn **and the stats bucket name/arn** into `module.control`; new `enzy_base_url` + `stats_export_schedule` vars. |
+| `modules/control` + `server_controller/controller.py` | `/mc register add\|list\|remove` subcommand group: resolves username→UUID via the Mojang API and read-modify-writes the email-map SSM parameter. `/mc whitelist add` and `/mc register add` also **seed a zero baseline** (seed-if-absent) into the export's `state/` object so a new player's first session counts. Adds `ssm:GetParameter`/`PutParameter` (scoped to the param), `s3:GetObject`/`PutObject` on `<bucket>/state/*`, and `PLAYER_EMAIL_MAP_PARAM` + `STATS_BUCKET` env vars. `add`/`list` open; `remove` admin-gated. |
 
 The map value carries the canonical Mojang name alongside the email, so `/mc register list` shows usernames with no extra Mojang calls and the export uses it as an `mcUsername` fallback. SSM has no compare-and-swap, so two simultaneous registrations could lose an update — acceptable at this scale (a few players, ~2x/week); the String parameter (standard tier, ~4 KB) holds ~50 players.
 
