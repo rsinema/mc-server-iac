@@ -35,3 +35,13 @@ variable "admin_discord_user_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "email_map_parameter_name" {
+  description = "Name of the SSM parameter holding the UUID→email map; /mc register reads and writes it."
+  type        = string
+}
+
+variable "email_map_parameter_arn" {
+  description = "ARN of the UUID→email map SSM parameter, used to scope the controller Lambda's SSM grant."
+  type        = string
+}

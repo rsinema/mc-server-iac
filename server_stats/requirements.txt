@@ -1,0 +1,4 @@
+# Runtime dependencies for the stats export Lambda.
+# boto3 is provided by the AWS Lambda Python runtime; everything else this
+# module uses is in the standard library. Nothing is vendored into this dir.
+boto3>=1.34.0

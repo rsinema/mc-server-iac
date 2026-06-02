@@ -45,6 +45,19 @@ resource "aws_secretsmanager_secret" "discord_signing_key" {
 #   aws secretsmanager update-secret --secret-id <arn> --secret-string '{"public_key":"<hex>"}'
 # See docs/runbook.md for instructions.
 
+resource "aws_secretsmanager_secret" "enzy_api_key" {
+  name = "${var.server_name}-enzy-api-key"
+
+  tags = {
+    Project = "mc-server"
+  }
+}
+
+# NOTE: The Enzy X-Secret-Token must be set manually after creation (the value
+# is never committed to this repo). The export Lambda reads it at runtime:
+#   aws secretsmanager put-secret-value --secret-id <arn> --secret-string '<token>'
+# See docs/stats-leaderboard.md §5.
+
 # Network module
 module "network" {
   source = "./modules/network"
@@ -67,6 +80,8 @@ module "compute" {
   subnet_id         = data.aws_subnet.first.id
   rcon_password     = random_password.rcon.result
   whitelist_seed    = var.whitelist_seed
+  stats_bucket_name = module.stats.bucket_name
+  stats_bucket_arn  = module.stats.bucket_arn
 }
 
 # Storage module
@@ -94,6 +109,8 @@ module "control" {
   discord_webhook_url            = var.discord_webhook_url
   idle_stop_alarm_name           = "${var.server_name}-idle-stop"
   admin_discord_user_ids         = var.admin_discord_user_ids
+  email_map_parameter_name       = module.stats.email_map_parameter_name
+  email_map_parameter_arn        = module.stats.email_map_parameter_arn
 }
 
 # DNS module
@@ -103,6 +120,17 @@ module "dns" {
   server_name = var.server_name
   domain_name = var.domain_name
   eip_address = module.network.eip_address
+}
+
+# Stats export module
+module "stats" {
+  source = "./modules/stats"
+
+  server_name         = var.server_name
+  enzy_secret_arn     = aws_secretsmanager_secret.enzy_api_key.arn
+  enzy_base_url       = var.enzy_base_url
+  schedule_expression = var.stats_export_schedule
+  dry_run             = var.stats_export_dry_run
 }
 
 # Monitoring module

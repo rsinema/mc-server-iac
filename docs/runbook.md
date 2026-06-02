@@ -309,6 +309,35 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
             "type": 1
           }
         ]
+      },
+      {
+        "name": "register",
+        "description": "Link a Minecraft account to an Enzy email for the stats leaderboard",
+        "type": 2,
+        "options": [
+          {
+            "name": "add",
+            "description": "Register a Minecraft username to an Enzy email",
+            "type": 1,
+            "options": [
+              {"name": "user",  "description": "Mojang username",      "type": 3, "required": true},
+              {"name": "email", "description": "Your @enzy.co email",  "type": 3, "required": true}
+            ]
+          },
+          {
+            "name": "list",
+            "description": "Show current registrations",
+            "type": 1
+          },
+          {
+            "name": "remove",
+            "description": "Remove a registration (admin only)",
+            "type": 1,
+            "options": [
+              {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+            ]
+          }
+        ]
       }
     ]
   }'
@@ -506,6 +535,66 @@ aws cloudwatch describe-alarms --alarm-names MCServerInstance-idle-stop \
 ```
 
 The equivalent `{"action":"stop"}` payload is what EventBridge sends on idle-stop — you can invoke it directly for testing too.
+
+---
+
+## How to Set Up the Stats Leaderboard Export
+
+The daily export (`MCServerInstance-stats-export` Lambda) pushes per-player stat deltas to the Enzy leaderboard. Full design: [`stats-leaderboard.md`](./stats-leaderboard.md). The Lambda ships with `DRY_RUN=1`, so it computes and logs payloads but does **not** POST until you deliberately enable it — important, because the **first real POST locks the 9-column set forever**.
+
+### One-time setup (after `tofu apply`)
+
+```bash
+# 1. Store the Enzy X-Secret-Token (never commit it). Use the rotated value.
+aws secretsmanager put-secret-value \
+  --secret-id MCServerInstance-enzy-api-key \
+  --secret-string '<enzy-x-secret-token>'
+
+# 2. Register players — the normal path is the Discord command (no AWS access
+#    needed), which resolves the username to its UUID via Mojang and writes the
+#    map for you:
+#      /mc register add user:<mojang_name> email:<you@enzy.co>
+#      /mc register list                 (show who's registered)
+#      /mc register remove user:<name>   (admin only)
+```
+
+The `/mc register` group requires the slash-command schema to include it — re-run the registration curl in *How to Register / Update Slash Commands* if you added this after the initial setup.
+
+**Manual fallback** (no Discord, e.g. seeding before go-live): write the SSM parameter directly. The value is `{ "<uuid>": {"email": ..., "name": ...} }` (a bare `"<uuid>": "email"` string is also accepted). Grab UUIDs from `s3://<bucket>/raw/usercache.json` after the server has run once; dashed or undashed UUIDs both work.
+
+```bash
+aws ssm put-parameter --overwrite \
+  --name /MCServerInstance/stats/player-email-map \
+  --type String \
+  --value '{"069a79f4-44e9-4726-a5be-fca90e38aaf5":{"email":"riley.sinema@enzy.co","name":"riley_mc"}}'
+```
+
+Find the bucket name with `tofu output` or `aws s3 ls | grep stats`.
+
+### Dry run → go live
+
+```bash
+# Dry run (the deployed default — stats_export_dry_run = true): compute + log, no POST.
+aws lambda invoke --function-name MCServerInstance-stats-export \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/stats.json
+cat /tmp/stats.json
+# Then inspect the would-be payload in CloudWatch Logs (look for "DRY_RUN — would POST").
+```
+
+When the payload looks right, go live through IaC (not a CLI env override, which would drift):
+
+```hcl
+# terraform.tfvars
+stats_export_dry_run = false
+```
+
+```bash
+tofu apply   # flips DRY_RUN to "0"; the next run does the first, column-locking POST
+```
+
+### Verify
+
+After two consecutive daily runs, confirm two distinct rows per player (different `snapshotKey`/`snapshotDate`) in the Enzy backing table, then check the leaderboard view in the app. To force a run off-schedule, invoke the Lambda directly with `--payload '{}'` as above.
 
 ---
 
