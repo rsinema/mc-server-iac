@@ -57,6 +57,8 @@ HELP_TEXT = (
     "Minecraft account to your Enzy email for the stats leaderboard.\n"
     "`/mc register list` — show who's registered.\n"
     "`/mc register remove user:<mojang_name>` — drop a registration (admin only).\n"
+    "`/mc op user:<mojang_name>` — grant in-game operator/admin (admin only).\n"
+    "`/mc deop user:<mojang_name>` — revoke operator/admin (admin only).\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
     "someone in the server to run `/mc whitelist add user:<your_name>`."
@@ -85,6 +87,8 @@ COMMAND_REGISTRY = {
     ("register", "add"):     {"ack": "deferred",  "ephemeral": True,  "admin": False},
     ("register", "list"):    {"ack": "deferred",  "ephemeral": True,  "admin": False},
     ("register", "remove"):  {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    ("op",):                 {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    ("deop",):               {"ack": "deferred",  "ephemeral": True,  "admin": True},
 }
 
 
@@ -506,6 +510,48 @@ def run_whitelist_list(instance_id: str, rcon_password: str) -> str:
         return f"Failed to list whitelist: {e}"
 
 
+def run_op(instance_id: str, rcon_password: str, username: str) -> str:
+    """Grant Minecraft operator (admin) status to a player via RCON `op`.
+
+    Admin-gated in the registry — operator status grants in-game admin powers
+    (gamemode, kick/ban, world edits), so only Discord IDs in
+    ADMIN_DISCORD_USER_IDS may run it. There is no RCON `op list`; ops live in
+    `ops.json` on the instance, so a list subcommand isn't offered here.
+    """
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    err, ip = _require_running_server(instance_id)
+    if err:
+        return err
+
+    try:
+        output = rcon_command(f"op {username}", rcon_password, host=ip)
+    except Exception as e:
+        return f"Failed to op `{username}`: {e}"
+
+    stripped = output.strip() if output else ""
+    return f"Granted operator (admin) to `{username}`." + (f"\n```\n{stripped}\n```" if stripped else "")
+
+
+def run_deop(instance_id: str, rcon_password: str, username: str) -> str:
+    """Revoke Minecraft operator status from a player via RCON `deop`."""
+    if not MOJANG_USERNAME_RE.match(username or ""):
+        return f"`{username}` is not a valid Mojang username (3-16 chars, letters/digits/underscore)."
+
+    err, ip = _require_running_server(instance_id)
+    if err:
+        return err
+
+    try:
+        output = rcon_command(f"deop {username}", rcon_password, host=ip)
+    except Exception as e:
+        return f"Failed to deop `{username}`: {e}"
+
+    stripped = output.strip() if output else ""
+    return f"Revoked operator (admin) from `{username}`." + (f"\n```\n{stripped}\n```" if stripped else "")
+
+
 # ---------------------------------------------------------------------------
 # Stats registration (UUID→email map in SSM, consumed by the export Lambda)
 #
@@ -701,6 +747,10 @@ def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str
         return run_register_list()
     if path == ("register", "remove"):
         return run_register_remove(args.get("user", ""))
+    if path == ("op",):
+        return run_op(instance_id, rcon_password, args.get("user", ""))
+    if path == ("deop",):
+        return run_deop(instance_id, rcon_password, args.get("user", ""))
     return f"Unknown subcommand: `/mc {' '.join(path)}`. Try `/mc help`."
 
 

@@ -283,6 +283,22 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
       {"name": "players", "description": "List online players", "type": 1},
       {"name": "help",    "description": "Show command help",   "type": 1},
       {
+        "name": "op",
+        "description": "Grant operator/admin to a player (admin only)",
+        "type": 1,
+        "options": [
+          {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+        ]
+      },
+      {
+        "name": "deop",
+        "description": "Revoke operator/admin from a player (admin only)",
+        "type": 1,
+        "options": [
+          {"name": "user", "description": "Mojang username", "type": 3, "required": true}
+        ]
+      },
+      {
         "name": "whitelist",
         "description": "Manage the player whitelist",
         "type": 2,
@@ -393,9 +409,26 @@ All three require the server to be `running` (they go over RCON, which only resp
 
 ---
 
+## How to Grant In-Game Admin (Operator)
+
+Minecraft operator status (`op`) grants in-game admin powers — gamemode changes, kick/ban, world edits, and other server commands. Granting it is **admin-only** (same gate as `/mc whitelist remove`; see *How to Authorize Admin Commands*).
+
+- `/mc op user:<name>` — RCON-runs `op <name>`, making the player a server operator.
+- `/mc deop user:<name>` — RCON-runs `deop <name>`, revoking it.
+
+Both require the server to be `running` (RCON only responds when the container is up) and validate the username against the same `^[A-Za-z0-9_]{3,16}$` regex. Operator status is persisted in `ops.json` on the EBS data volume, so it survives stop/start. There is no `/mc op list` — vanilla/Paper has no RCON command to list ops, and the Lambda can't read `ops.json` off the instance; if you need to audit, SSM onto the box and `cat /opt/minecraft/ops.json`.
+
+To do it manually over RCON instead:
+```bash
+docker exec minecraft rcon-cli op <username>
+docker exec minecraft rcon-cli deop <username>
+```
+
+---
+
 ## How to Authorize Admin Commands
 
-`/mc whitelist remove` is gated to specific Discord users. Everyone else sees `"/mc whitelist remove is admin-only."` and the interaction doesn't even defer.
+`/mc whitelist remove`, `/mc register remove`, `/mc op`, and `/mc deop` are gated to specific Discord users. Everyone else sees an `"… is admin-only."` reply and the interaction doesn't even defer.
 
 1. **Get your Discord user ID.** In Discord: User Settings → Advanced → Developer Mode (enable), then right-click your name → Copy User ID. It's a 17–19 digit string (snowflake).
 
