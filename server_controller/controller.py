@@ -44,6 +44,20 @@ MOJANG_API = "https://api.mojang.com"
 # address that silently never displays.
 ENZY_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@enzy\.co$", re.IGNORECASE)
 
+# Waypoint labels are stored in SSM and only ever rendered back into Discord
+# messages — they never touch RCON — so this guards display/key sanity, not
+# command injection. Allow letters/digits/space/underscore/hyphen, 1-32 chars.
+WAYPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
+
+# Minecraft world border tops out near ±30M on X/Z; Y is far smaller but varies
+# by dimension and custom worlds, so bound every coordinate to the same generous
+# range rather than special-casing Y.
+COORD_MIN, COORD_MAX = -30_000_000, 30_000_000
+
+# SSM String parameters cap at 4096 bytes. Refuse a save that would overflow the
+# waypoint blob with a clear message instead of letting put_parameter throw.
+WAYPOINTS_MAX_BYTES = 4096
+
 HELP_TEXT = (
     "**Minecraft Server Commands** — connect at `mc.rsinema.com:25565`\n\n"
     "`/mc start` — spin up the server (~30s for EC2 + ~30s for MC to start).\n"
@@ -59,6 +73,10 @@ HELP_TEXT = (
     "`/mc register remove user:<mojang_name>` — drop a registration (admin only).\n"
     "`/mc op user:<mojang_name>` — grant in-game operator/admin (admin only).\n"
     "`/mc deop user:<mojang_name>` — revoke operator/admin (admin only).\n"
+    "`/mc waypoint save name:<label> x:<x> y:<y> z:<z>` — save coords "
+    "(e.g. `name:base x:30 y:166 z:-180`). Works even while the server is off.\n"
+    "`/mc waypoint list` — show all saved coordinates.\n"
+    "`/mc waypoint remove name:<label>` — delete a saved coordinate (admin only).\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
     "someone in the server to run `/mc whitelist add user:<your_name>`."
@@ -89,6 +107,13 @@ COMMAND_REGISTRY = {
     ("register", "remove"):  {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("op",):                 {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("deop",):               {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    # Waypoints are shared, low-stakes coord notes stored in SSM (no server
+    # needed). save/list are public and answer to the channel so everyone sees
+    # the coords; remove is admin-gated like the other destructive ops so a
+    # typo or griefer can't wipe the shared list.
+    ("waypoint", "save"):    {"ack": "deferred",  "ephemeral": False, "admin": False},
+    ("waypoint", "list"):    {"ack": "deferred",  "ephemeral": False, "admin": False},
+    ("waypoint", "remove"):  {"ack": "deferred",  "ephemeral": True,  "admin": True},
 }
 
 
@@ -724,6 +749,105 @@ def run_register_remove(username: str) -> str:
     return f"Removed `{username}` (`{_entry_email(removed)}`) from leaderboard tracking."
 
 
+# ---------------------------------------------------------------------------
+# Waypoints (shared coordinate notes in SSM, no running server required)
+#
+# Stored as JSON {"<lowercased-label>": {"name": "<display>", "x": int,
+# "y": int, "z": int, "by": "<discord-name>"}}. Keyed by the lowercased label
+# so lookups/overwrites are case-insensitive while the original casing is kept
+# for display. The whole blob lives in one SSM String parameter (4KB cap), the
+# same pattern as the register email map — cheap, durable, and readable while
+# the EC2 instance is stopped.
+# ---------------------------------------------------------------------------
+
+def _load_waypoints() -> dict:
+    param = os.environ["WAYPOINTS_PARAM"]
+    try:
+        resp = _ssm.get_parameter(Name=param)
+        data = json.loads(resp["Parameter"]["Value"] or "{}")
+    except (ValueError, KeyError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_waypoints(waypoints: dict) -> None:
+    param = os.environ["WAYPOINTS_PARAM"]
+    _ssm.put_parameter(Name=param, Value=json.dumps(waypoints), Type="String", Overwrite=True)
+
+
+def _parse_coord(value) -> int | None:
+    """Coerce a Discord option to an int within Minecraft world bounds, or None."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if COORD_MIN <= n <= COORD_MAX else None
+
+
+def run_waypoint_save(name: str, x, y, z, caller_name: str = "Someone") -> str:
+    name = (name or "").strip()
+    if not WAYPOINT_NAME_RE.match(name):
+        return (
+            f"`{name}` isn't a valid waypoint name (1-32 chars: letters, digits, "
+            "spaces, `_` or `-`)."
+        )
+
+    coords = {"x": _parse_coord(x), "y": _parse_coord(y), "z": _parse_coord(z)}
+    bad = [axis for axis, val in coords.items() if val is None]
+    if bad:
+        return (
+            f"Coordinate(s) {', '.join('`' + b + '`' for b in bad)} must be whole "
+            f"numbers between {COORD_MIN:,} and {COORD_MAX:,}."
+        )
+
+    waypoints = _load_waypoints()
+    key = name.lower()
+    existed = key in waypoints
+    waypoints[key] = {"name": name, "by": caller_name, **coords}
+
+    # Guard the 4KB SSM ceiling before writing so an overflow reads as a clear
+    # "list is full" message rather than a raw ParameterMaxLimitExceeded error.
+    if len(json.dumps(waypoints).encode("utf-8")) > WAYPOINTS_MAX_BYTES:
+        return (
+            "The waypoint list is full (4KB limit reached). Remove an old one with "
+            "`/mc waypoint remove` before adding more."
+        )
+
+    _save_waypoints(waypoints)
+    verb = "Updated" if existed else "Saved"
+    return f"{verb} waypoint **{name}** → `{coords['x']} {coords['y']} {coords['z']}`."
+
+
+def run_waypoint_list() -> str:
+    waypoints = _load_waypoints()
+    if not waypoints:
+        return "No waypoints saved yet. Add one with `/mc waypoint save name:<label> x:<x> y:<y> z:<z>`."
+
+    rows = []
+    for entry in sorted(waypoints.values(), key=lambda e: e.get("name", "").lower()):
+        label = entry.get("name", "(unnamed)")
+        coord = f"{entry.get('x')} {entry.get('y')} {entry.get('z')}"
+        by = entry.get("by")
+        rows.append(f"{label}: {coord}" + (f"  (by {by})" if by else ""))
+    body = "\n".join(rows)
+    return f"**Waypoints ({len(rows)})**\n```\n{body}\n```"
+
+
+def run_waypoint_remove(name: str) -> str:
+    name = (name or "").strip()
+    if not WAYPOINT_NAME_RE.match(name):
+        return f"`{name}` isn't a valid waypoint name."
+
+    waypoints = _load_waypoints()
+    entry = waypoints.pop(name.lower(), None)
+    if entry is None:
+        return f"No waypoint named **{name}**. Use `/mc waypoint list` to see saved ones."
+
+    _save_waypoints(waypoints)
+    coord = f"{entry.get('x')} {entry.get('y')} {entry.get('z')}"
+    return f"Removed waypoint **{entry.get('name', name)}** (`{coord}`)."
+
+
 def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str,
                    caller_name: str = "Someone", webhook_url: str = "") -> str:
     """Route a parsed command path to its implementation (async worker side)."""
@@ -751,6 +875,15 @@ def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str
         return run_op(instance_id, rcon_password, args.get("user", ""))
     if path == ("deop",):
         return run_deop(instance_id, rcon_password, args.get("user", ""))
+    if path == ("waypoint", "save"):
+        return run_waypoint_save(
+            args.get("name", ""), args.get("x"), args.get("y"), args.get("z"),
+            caller_name=caller_name,
+        )
+    if path == ("waypoint", "list"):
+        return run_waypoint_list()
+    if path == ("waypoint", "remove"):
+        return run_waypoint_remove(args.get("name", ""))
     return f"Unknown subcommand: `/mc {' '.join(path)}`. Try `/mc help`."
 
 

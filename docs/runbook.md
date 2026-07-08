@@ -354,6 +354,37 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
             ]
           }
         ]
+      },
+      {
+        "name": "waypoint",
+        "description": "Save and look up shared coordinates",
+        "type": 2,
+        "options": [
+          {
+            "name": "save",
+            "description": "Save coordinates under a label",
+            "type": 1,
+            "options": [
+              {"name": "name", "description": "Waypoint label (e.g. base)", "type": 3, "required": true},
+              {"name": "x",    "description": "X coordinate",               "type": 4, "required": true},
+              {"name": "y",    "description": "Y coordinate",               "type": 4, "required": true},
+              {"name": "z",    "description": "Z coordinate",               "type": 4, "required": true}
+            ]
+          },
+          {
+            "name": "list",
+            "description": "Show all saved coordinates",
+            "type": 1
+          },
+          {
+            "name": "remove",
+            "description": "Remove a saved coordinate (admin only)",
+            "type": 1,
+            "options": [
+              {"name": "name", "description": "Waypoint label", "type": 3, "required": true}
+            ]
+          }
+        ]
       }
     ]
   }'
@@ -364,6 +395,21 @@ Drop `/guilds/$GUILD_ID` from the path for a global command.
 **Re-running this replaces the previous command definition for the same name.** If you change the option tree (e.g. adding another subcommand), re-run the curl — guild commands update instantly, global commands take up to an hour. You can also list and delete commands via `GET/DELETE /applications/$APP_ID/guilds/$GUILD_ID/commands[/$ID]`.
 
 **If the response is `{"message": "Missing Access", "code": 50001}`:** the bot is not installed in that guild (or was installed without `applications.commands` scope). Run the OAuth URL from the previous section and re-invite.
+
+---
+
+## Waypoints (shared coordinates)
+
+`/mc waypoint save name:<label> x:<x> y:<y> z:<z>` stores a coordinate under a label, `/mc waypoint list` shows them all, and `/mc waypoint remove name:<label>` deletes one (admin only, same gate as `/mc whitelist remove`). `save`/`list` post to the channel so everyone sees the coords; `remove` replies privately.
+
+Data lives in the SSM String parameter `/MCServerInstance/stats/waypoints` (JSON keyed by lowercased label, so names are case-insensitive), created and owned by the control module. Because it's in SSM rather than the game world, waypoints are readable and writable **even while the server is stopped**. The parameter has a 4KB ceiling (~60–80 waypoints); the Lambda refuses a save that would overflow it with a "list is full" message rather than erroring. Adding this group after initial setup requires re-running the registration curl above (guild commands update instantly).
+
+To inspect or seed by hand:
+
+```bash
+aws ssm get-parameter --region us-west-2 --name /MCServerInstance/stats/waypoints \
+  --query Parameter.Value --output text
+```
 
 ---
 

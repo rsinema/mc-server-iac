@@ -1,3 +1,27 @@
+# Shared waypoint (coordinate) notes written by /mc waypoint save and read by
+# /mc waypoint list. Owned by the control plane (only this Lambda touches it),
+# so it lives in this module rather than being wired through the root. Seeded
+# empty; ignore_changes leaves the live contents to the Lambda after create.
+#
+# Named under the /stats/ prefix so it falls within the SSM path the deploy
+# user is already granted (MCServer-stats-job-policy scopes PutParameter to
+# /MCServerInstance/stats/*); it's a control-plane concern, not a stats one,
+# but reusing that prefix avoids a separate IAM grant for the deploy principal.
+resource "aws_ssm_parameter" "waypoints" {
+  name        = "/${var.server_name}/stats/waypoints"
+  description = "JSON {\"<label>\": {\"name\", \"x\", \"y\", \"z\", \"by\"}} of shared Minecraft coordinates; written by /mc waypoint"
+  type        = "String"
+  value       = jsonencode({})
+
+  tags = {
+    Project = "mc-server"
+  }
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 resource "aws_iam_role" "controller_lambda" {
   name = "${var.server_name}-controller-role"
 
@@ -76,6 +100,15 @@ resource "aws_iam_policy" "controller_lambda" {
         Resource = var.email_map_parameter_arn
       },
       {
+        Sid    = "WaypointsReadWrite"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:PutParameter"
+        ]
+        Resource = aws_ssm_parameter.waypoints.arn
+      },
+      {
         Sid    = "StatsBaselineSeed"
         Effect = "Allow"
         Action = [
@@ -117,6 +150,7 @@ resource "aws_lambda_function" "server_controller" {
       ADMIN_DISCORD_USER_IDS         = join(",", var.admin_discord_user_ids)
       PLAYER_EMAIL_MAP_PARAM         = var.email_map_parameter_name
       STATS_BUCKET                   = var.stats_bucket_name
+      WAYPOINTS_PARAM                = aws_ssm_parameter.waypoints.name
     }
   }
 }
