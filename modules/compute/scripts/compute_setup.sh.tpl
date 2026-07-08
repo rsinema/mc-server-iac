@@ -23,6 +23,7 @@ write_files:
           -e VERSION=${minecraft_version} \
           -e MEMORY=${minecraft_memory}G \
           -e EULA=TRUE \
+          -e ALLOW_FLIGHT=TRUE \
           -e ENABLE_RCON=true \
           -e RCON_PASSWORD=${rcon_password} \
           -e SERVER_PORT=25565 \
