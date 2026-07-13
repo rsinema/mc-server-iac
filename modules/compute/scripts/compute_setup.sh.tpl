@@ -52,9 +52,30 @@ write_files:
       DIR="/opt/minecraft/worlds/$${NAME}"
       mkdir -p "$${DIR}"
       echo "$${DIR}" > /run/mc-active-world
+
+      # Share the whitelist and operator (admin) list across every world profile
+      # by bind-mounting single canonical files into /data — whichever world is
+      # live reads and writes the same files, so `/mc whitelist add` and `/mc op`
+      # apply everywhere. Seed once from the survival profile's existing files
+      # (or empty JSON). Docker creates a *directory* at a missing bind-mount
+      # source, so these must exist as files before the run.
+      SHARED=/opt/minecraft/shared
+      mkdir -p "$${SHARED}"
+      for f in whitelist.json ops.json; do
+          if [ ! -f "$${SHARED}/$${f}" ]; then
+              if [ -f "/opt/minecraft/worlds/survival/$${f}" ]; then
+                  cp -p "/opt/minecraft/worlds/survival/$${f}" "$${SHARED}/$${f}"
+              else
+                  echo "[]" > "$${SHARED}/$${f}"
+              fi
+          fi
+      done
+
       exec /usr/bin/docker run \
           --name minecraft \
           -v "$${DIR}:/data" \
+          -v "$${SHARED}/whitelist.json:/data/whitelist.json" \
+          -v "$${SHARED}/ops.json:/data/ops.json" \
           -e TYPE=PAPER \
           -e PAPER_CHANNEL=experimental \
           -e VERSION=${minecraft_version} \

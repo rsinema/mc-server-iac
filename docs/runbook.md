@@ -398,7 +398,7 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
           },
           {
             "name": "set",
-            "description": "Switch the active world; applies on next start (admin only)",
+            "description": "Switch the active world; applies on next start",
             "type": 1,
             "options": [
               {"name": "name", "description": "World profile, e.g. survival or skyblock", "type": 3, "required": true}
@@ -440,7 +440,7 @@ The server can host multiple worlds, one live at a time, on the same instance. E
 **Everyday use (Discord):**
 
 - `/mc world list` — show profiles and which is active (reads `/MCServerInstance/world-list`).
-- `/mc world set name:<world>` — switch the active world (admin only). It writes the SSM param; the switch takes effect on the **next cold start**, so the flow is `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
+- `/mc world set name:<world>` — switch the active world (open to everyone; posts to the channel). It writes the SSM param; the switch takes effect on the **next cold start**, so the flow is `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
 - `/mc status` now shows the active world.
 
 **Adding a new world to the registry.** `/mc world set` only accepts names present in `/MCServerInstance/world-list`. Add one by appending to `world_profiles` in `terraform.tfvars` and `tofu apply` (the seed is `ignore_changes`, so also update the live param), or edit the param directly:
@@ -460,7 +460,7 @@ aws ssm put-parameter --region us-west-2 --name /MCServerInstance/world-list \
 **Notes.**
 - The stats leaderboard tracks the **survival** profile only; other worlds don't feed it.
 - All profiles live on the one EBS volume, so the existing DLM snapshots cover them together.
-- Each profile has its own whitelist. A brand-new profile starts empty (whitelist is no longer seeded from `whitelist_seed` at the container level) — add players with `/mc whitelist add` once it's running.
+- The **whitelist and operator (admin) list are shared across all worlds** — `run.sh` bind-mounts canonical `/opt/minecraft/shared/{whitelist.json,ops.json}` into `/data`, so `/mc whitelist add` and `/mc op` apply to every profile. They're seeded once from the survival profile's existing files, so new profiles inherit the current allowlist automatically. (This replaces the old container-level `whitelist_seed`.) To edit the shared list by hand, edit those files on the box and restart.
 - Growing `mc_volume_size` resizes the filesystem automatically on the next boot (`resize2fs` in user-data); no manual step needed.
 
 ---

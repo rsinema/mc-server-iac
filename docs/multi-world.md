@@ -10,8 +10,9 @@
 
 - One EC2 instance, one container, one port (`25565`), one DNS record — all unchanged.
 - Multiple **world profiles**, each a self-contained `/data` directory (its own `world/`,
-  `server.properties`, `plugins/`, `ops.json`, `whitelist.json`) living side-by-side on the
-  existing EBS volume:
+  `server.properties`, `plugins/`) living side-by-side on the existing EBS volume. The
+  `whitelist.json` and `ops.json` are the exception — they're shared across all profiles (see
+  the decisions table):
 
   ```
   /opt/minecraft/
@@ -47,7 +48,8 @@ survival stay vanilla while skyblock runs its own plugin set and config, with no
 | Switching while running | **Warn and defer** — write the param, tell the caller it applies after `stop`/`start` | Avoids `ssm:SendCommand` and live-restart complexity |
 | Unknown / new profile on start | **Auto-create** an empty dir; itzg generates a fresh vanilla world there | New survival-style worlds "just work"; skyblock remains a deliberate pre-provision |
 | World registry (for `list` / validation) | SSM param `/<server_name>/world-list`, seeded from `var.world_profiles` | The Lambda has no filesystem access, so the set of known worlds must live in SSM |
-| Discord surface | `/mc world list`, `/mc world set <name>` (admin), active world shown in `/mc status` | Mirrors the existing waypoint/register command shape |
+| Discord surface | `/mc world list`, `/mc world set <name>` (open to everyone, posts to channel), active world shown in `/mc status` | Mirrors the waypoint command shape; a switch affects all players so it's announced, not gated |
+| Whitelist & operator list | **Shared across all worlds** — canonical `/opt/minecraft/shared/{whitelist.json,ops.json}` bind-mounted into `/data` | One allowlist/admin set everywhere; `/mc whitelist add` and `/mc op` apply to every profile |
 | Stats / leaderboard | **Out of scope for now.** Stats sync follows the survival profile only | Keep the existing Enzy pipeline unchanged; skyblock sessions do not feed the leaderboard |
 
 ### Critical detail
@@ -113,7 +115,7 @@ in `modules/compute/main.tf`) grants `ssm:GetParameter` on `*`, so the box can r
 
   ```python
   ("world", "list"): {"ack": "deferred", "ephemeral": False, "admin": False},
-  ("world", "set"):  {"ack": "deferred", "ephemeral": True,  "admin": True},
+  ("world", "set"):  {"ack": "deferred", "ephemeral": False, "admin": False},
   ```
 
 - Add a name-validation regex (reuse the waypoint style): `^[a-z0-9_-]{1,32}$`.

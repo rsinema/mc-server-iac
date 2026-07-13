@@ -83,8 +83,8 @@ HELP_TEXT = (
     "`/mc waypoint list` — show all saved coordinates.\n"
     "`/mc waypoint remove name:<label>` — delete a saved coordinate (admin only).\n"
     "`/mc world list` — show available world profiles and which is active.\n"
-    "`/mc world set name:<world>` — switch the active world, e.g. `name:skyblock` "
-    "(admin only). Takes effect on the next `/mc start`.\n"
+    "`/mc world set name:<world>` — switch the active world, e.g. `name:skyblock`. "
+    "Takes effect on the next `/mc start`.\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
     "someone in the server to run `/mc whitelist add user:<your_name>`."
@@ -116,10 +116,11 @@ COMMAND_REGISTRY = {
     ("op",):                 {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("deop",):               {"ack": "deferred",  "ephemeral": True,  "admin": True},
     # World profiles select which /data dir the server boots (see
-    # docs/multi-world.md). list is public and answers to the channel; set is
-    # admin-gated (it changes what everyone loads next start) and ephemeral.
+    # docs/multi-world.md). Both are open to everyone and answer to the channel:
+    # a switch only takes effect on the next start and affects all players, so
+    # it's announced publicly rather than gated or hidden.
     ("world", "list"):       {"ack": "deferred",  "ephemeral": False, "admin": False},
-    ("world", "set"):        {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    ("world", "set"):        {"ack": "deferred",  "ephemeral": False, "admin": False},
     # Waypoints are shared, low-stakes coord notes stored in SSM (no server
     # needed). save/list are public and answer to the channel so everyone sees
     # the coords; remove is admin-gated like the other destructive ops so a
