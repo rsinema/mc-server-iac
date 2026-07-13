@@ -15,24 +15,10 @@ write_files:
       RestartSec=10
       ExecStartPre=-/usr/bin/docker stop minecraft
       ExecStartPre=-/usr/bin/docker rm minecraft
-      ExecStart=/usr/bin/docker run \
-          --name minecraft \
-          -v /opt/minecraft:/data \
-          -e TYPE=PAPER \
-          -e PAPER_CHANNEL=experimental \
-          -e VERSION=${minecraft_version} \
-          -e MEMORY=${minecraft_memory}G \
-          -e EULA=TRUE \
-          -e ALLOW_FLIGHT=TRUE \
-          -e ENABLE_RCON=true \
-          -e RCON_PASSWORD=${rcon_password} \
-          -e SERVER_PORT=25565 \
-          -e ENFORCE_WHITELIST=TRUE \
-          -e WHITELIST=${whitelist_seed} \
-          -e SEED=${minecraft_seed} \
-          -p 25565:25565 \
-          -p 25575:25575 \
-          itzg/minecraft-server
+      # The world profile to boot is resolved from SSM at start time by run.sh
+      # (see docs/multi-world.md), so the docker run lives there rather than
+      # inline here — a unit ExecStart can't read SSM before it launches.
+      ExecStart=/opt/mc-server/run.sh
       ExecStop=/usr/bin/docker stop minecraft
       # End-of-session flush: after the container stops (Paper saves stats on
       # SIGTERM), push the final state to S3. Runs before network teardown
@@ -44,6 +30,44 @@ write_files:
 
       [Install]
       WantedBy=multi-user.target
+
+  - path: /opt/mc-server/run.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Resolve the active world profile from SSM at container-start time and
+      # mount /opt/minecraft/worlds/<name> as /data. Reading SSM here — rather
+      # than in cloud-init runcmd, which only runs on an instance's first boot —
+      # means every `/mc start` honors the latest `/mc world set`. Falls back to
+      # the default profile if the param is unset, unreadable, or fails the
+      # charset guard. An unknown-but-valid name is auto-created (itzg generates
+      # a fresh world there); pre-provision plugin worlds like skyblock first.
+      set -e
+      DEFAULT=survival
+      NAME=$(aws ssm get-parameter --name "/${server_name}/active-world" \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "$${DEFAULT}")
+      case "$${NAME}" in
+          *[!a-z0-9_-]*|"") NAME=$${DEFAULT} ;;
+      esac
+      DIR="/opt/minecraft/worlds/$${NAME}"
+      mkdir -p "$${DIR}"
+      echo "$${DIR}" > /run/mc-active-world
+      exec /usr/bin/docker run \
+          --name minecraft \
+          -v "$${DIR}:/data" \
+          -e TYPE=PAPER \
+          -e PAPER_CHANNEL=experimental \
+          -e VERSION=${minecraft_version} \
+          -e MEMORY=${minecraft_memory}G \
+          -e EULA=TRUE \
+          -e ALLOW_FLIGHT=TRUE \
+          -e ENABLE_RCON=true \
+          -e RCON_PASSWORD=${rcon_password} \
+          -e SERVER_PORT=25565 \
+          -e ENFORCE_WHITELIST=TRUE \
+          -p 25565:25565 \
+          -p 25575:25575 \
+          itzg/minecraft-server
 
   - path: /opt/mc-monitor/check_players.sh
     permissions: '0755'
@@ -100,14 +124,19 @@ write_files:
       # either and to a future world reseed/config change.
       docker exec minecraft rcon-cli save-all flush >/dev/null 2>&1 || true
 
-      STATS_DIR=/opt/minecraft/world/players/stats
-      [ -d "$STATS_DIR" ] || STATS_DIR=/opt/minecraft/world/stats
-      ADV_DIR=/opt/minecraft/world/players/advancements
-      [ -d "$ADV_DIR" ] || ADV_DIR=/opt/minecraft/world/advancements
+      # The leaderboard tracks the survival world only (see docs/multi-world.md),
+      # so read from its profile dir regardless of which world is currently live.
+      # When another world is active these files are unchanged, so `s3 sync`
+      # uploads nothing — a harmless no-op.
+      WORLD=/opt/minecraft/worlds/survival
+      STATS_DIR=$WORLD/world/players/stats
+      [ -d "$STATS_DIR" ] || STATS_DIR=$WORLD/world/stats
+      ADV_DIR=$WORLD/world/players/advancements
+      [ -d "$ADV_DIR" ] || ADV_DIR=$WORLD/world/advancements
 
       aws s3 sync "$STATS_DIR/" s3://${stats_bucket}/raw/stats/        --only-show-errors || true
       aws s3 sync "$ADV_DIR/"   s3://${stats_bucket}/raw/advancements/ --only-show-errors || true
-      aws s3 cp /opt/minecraft/usercache.json s3://${stats_bucket}/raw/usercache.json --only-show-errors || true
+      aws s3 cp "$WORLD/usercache.json" s3://${stats_bucket}/raw/usercache.json --only-show-errors || true
 
   - path: /etc/systemd/system/mc-stats-sync.service
     permissions: '0644'
@@ -181,6 +210,28 @@ runcmd:
     if ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
         echo "UUID=$${UUID} /opt/minecraft ext4 defaults,nofail 0 2" >> /etc/fstab
     fi
+
+    # Grow the filesystem to fill the volume in case mc_volume_size was bumped
+    # (EBS grows online, but the ext4 fs must be resized to see the new space).
+    # No-op when the fs already spans the whole device. ext4 is mkfs'd directly
+    # on the device (no partition table), so no growpart step is needed.
+    resize2fs "$DEVICE" || true
+
+    # One-time migration to per-world profiles (see docs/multi-world.md): move a
+    # legacy top-level /data (world/, plugins/, server.properties, ...) into
+    # worlds/survival so run.sh can mount it as a profile. Idempotent — skipped
+    # once worlds/survival exists. Instant, since it's a rename on the same
+    # filesystem. Runs only on first boot (runcmd), which is exactly when a
+    # replaced instance re-attaches the existing data volume.
+    cd /opt/minecraft
+    if [ ! -d worlds/survival ] && [ -d world ]; then
+        echo "Migrating legacy top-level world into worlds/survival..."
+        mkdir -p worlds/survival
+        find . -maxdepth 1 -mindepth 1 ! -name worlds ! -name 'lost+found' \
+            -exec mv -t /opt/minecraft/worlds/survival {} +
+    fi
+    mkdir -p /opt/minecraft/worlds/survival
+    cd /
 
     # Install and enable Docker
     dnf install -y docker

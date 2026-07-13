@@ -385,6 +385,26 @@ curl -X POST "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/
             ]
           }
         ]
+      },
+      {
+        "name": "world",
+        "description": "View and switch the active world profile",
+        "type": 2,
+        "options": [
+          {
+            "name": "list",
+            "description": "Show available world profiles and which is active",
+            "type": 1
+          },
+          {
+            "name": "set",
+            "description": "Switch the active world; applies on next start (admin only)",
+            "type": 1,
+            "options": [
+              {"name": "name", "description": "World profile, e.g. survival or skyblock", "type": 3, "required": true}
+            ]
+          }
+        ]
       }
     ]
   }'
@@ -410,6 +430,38 @@ To inspect or seed by hand:
 aws ssm get-parameter --region us-west-2 --name /MCServerInstance/stats/waypoints \
   --query Parameter.Value --output text
 ```
+
+---
+
+## Multi-World Profiles (survival / skyblock / …)
+
+The server can host multiple worlds, one live at a time, on the same instance. Each **profile** is a full `/data` directory (its own `world/`, `server.properties`, `plugins/`, `whitelist.json`) under `/opt/minecraft/worlds/<name>/`. Which one boots is chosen at container-start from the SSM param `/MCServerInstance/active-world`. Design details: [multi-world.md](./multi-world.md).
+
+**Everyday use (Discord):**
+
+- `/mc world list` — show profiles and which is active (reads `/MCServerInstance/world-list`).
+- `/mc world set name:<world>` — switch the active world (admin only). It writes the SSM param; the switch takes effect on the **next cold start**, so the flow is `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
+- `/mc status` now shows the active world.
+
+**Adding a new world to the registry.** `/mc world set` only accepts names present in `/MCServerInstance/world-list`. Add one by appending to `world_profiles` in `terraform.tfvars` and `tofu apply` (the seed is `ignore_changes`, so also update the live param), or edit the param directly:
+
+```bash
+aws ssm put-parameter --region us-west-2 --name /MCServerInstance/world-list \
+  --type StringList --overwrite --value "survival,skyblock"
+```
+
+**Provisioning a plugin world (e.g. skyblock).** An unknown-but-valid profile is auto-created on start as a fresh vanilla world. For skyblock you want the plugin and generator in place *before* first boot:
+
+1. `/mc start` (any world), then open a shell: `aws ssm start-session --target <instance-id>`.
+2. `sudo mkdir -p /opt/minecraft/worlds/skyblock/plugins`
+3. Drop the skyblock plugin jar (e.g. BentoBox + BSkyBlock) into `.../skyblock/plugins/` and add a `.../skyblock/server.properties` with the desired `level-type`/generator. `sudo chown -R 1000:1000 /opt/minecraft/worlds/skyblock` (the itzg container runs as uid 1000).
+4. `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
+
+**Notes.**
+- The stats leaderboard tracks the **survival** profile only; other worlds don't feed it.
+- All profiles live on the one EBS volume, so the existing DLM snapshots cover them together.
+- Each profile has its own whitelist. A brand-new profile starts empty (whitelist is no longer seeded from `whitelist_seed` at the container level) — add players with `/mc whitelist add` once it's running.
+- Growing `mc_volume_size` resizes the filesystem automatically on the next boot (`resize2fs` in user-data); no manual step needed.
 
 ---
 

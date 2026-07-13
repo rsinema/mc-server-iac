@@ -109,6 +109,7 @@ module "control" {
   discord_webhook_url            = var.discord_webhook_url
   idle_stop_alarm_name           = "${var.server_name}-idle-stop"
   admin_discord_user_ids         = var.admin_discord_user_ids
+  world_profiles                 = var.world_profiles
   email_map_parameter_name       = module.stats.email_map_parameter_name
   email_map_parameter_arn        = module.stats.email_map_parameter_arn
   stats_bucket_name              = module.stats.bucket_name

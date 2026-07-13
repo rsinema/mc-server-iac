@@ -108,11 +108,10 @@ resource "aws_instance" "mc_server" {
   associate_public_ip_address = true
 
   user_data = templatefile("${path.module}/scripts/compute_setup.sh.tpl", {
+    server_name       = var.server_name
     minecraft_version = var.minecraft_version
     minecraft_memory  = var.minecraft_memory
-    minecraft_seed    = var.minecraft_seed
     rcon_password     = var.rcon_password
-    whitelist_seed    = join(",", var.whitelist_seed)
     stats_bucket      = var.stats_bucket_name
   })
   user_data_replace_on_change = true

@@ -36,6 +36,12 @@ variable "admin_discord_user_ids" {
   default     = []
 }
 
+variable "world_profiles" {
+  description = "Known Minecraft world profiles; seeds the world-list SSM param that /mc world reads. First entry is the boot default."
+  type        = list(string)
+  default     = ["survival"]
+}
+
 variable "email_map_parameter_name" {
   description = "Name of the SSM parameter holding the UUID→email map; /mc register reads and writes it."
   type        = string

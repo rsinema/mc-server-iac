@@ -49,6 +49,11 @@ ENZY_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@enzy\.co$", re.IGNORECASE)
 # command injection. Allow letters/digits/space/underscore/hyphen, 1-32 chars.
 WAYPOINT_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,32}$")
 
+# World profile names double as on-disk directory names (/opt/minecraft/worlds/
+# <name>) and are interpolated into the instance's start script, so keep them to
+# a strict lowercase slug — the same charset the on-box run.sh sanitizer allows.
+WORLD_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+
 # Minecraft world border tops out near ±30M on X/Z; Y is far smaller but varies
 # by dimension and custom worlds, so bound every coordinate to the same generous
 # range rather than special-casing Y.
@@ -77,6 +82,9 @@ HELP_TEXT = (
     "(e.g. `name:base x:30 y:166 z:-180`). Works even while the server is off.\n"
     "`/mc waypoint list` — show all saved coordinates.\n"
     "`/mc waypoint remove name:<label>` — delete a saved coordinate (admin only).\n"
+    "`/mc world list` — show available world profiles and which is active.\n"
+    "`/mc world set name:<world>` — switch the active world, e.g. `name:skyblock` "
+    "(admin only). Takes effect on the next `/mc start`.\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
     "someone in the server to run `/mc whitelist add user:<your_name>`."
@@ -107,6 +115,11 @@ COMMAND_REGISTRY = {
     ("register", "remove"):  {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("op",):                 {"ack": "deferred",  "ephemeral": True,  "admin": True},
     ("deop",):               {"ack": "deferred",  "ephemeral": True,  "admin": True},
+    # World profiles select which /data dir the server boots (see
+    # docs/multi-world.md). list is public and answers to the channel; set is
+    # admin-gated (it changes what everyone loads next start) and ephemeral.
+    ("world", "list"):       {"ack": "deferred",  "ephemeral": False, "admin": False},
+    ("world", "set"):        {"ack": "deferred",  "ephemeral": True,  "admin": True},
     # Waypoints are shared, low-stakes coord notes stored in SSM (no server
     # needed). save/list are public and answer to the channel so everyone sees
     # the coords; remove is admin-gated like the other destructive ops so a
@@ -443,12 +456,14 @@ def run_stop(instance_id: str) -> str:
 
 def run_status(instance_id: str, rcon_password: str) -> str:
     state = get_instance_state(instance_id)
+    world = _get_active_world()
+    world_line = f"\nActive world: `{world}`" if world else ""
     if state == "stopped":
-        return "Server is stopped. Use `/mc start` to spin it up."
+        return "Server is stopped. Use `/mc start` to spin it up." + world_line
 
     ip = get_instance_public_ip(instance_id) or "pending"
     players = get_player_count(rcon_password, rcon_host=ip) if state == "running" and ip != "pending" else 0
-    return f"Server is running at `{ip}:25565`\nPlayers online: {players}"
+    return f"Server is running at `{ip}:25565`{world_line}\nPlayers online: {players}"
 
 
 def run_players(instance_id: str, rcon_password: str) -> str:
@@ -848,6 +863,78 @@ def run_waypoint_remove(name: str) -> str:
     return f"Removed waypoint **{entry.get('name', name)}** (`{coord}`)."
 
 
+# ---------------------------------------------------------------------------
+# World profiles (which /data dir the server boots)
+#
+# The active world and the registry of known worlds live in two SSM params
+# (ACTIVE_WORLD_PARAM / WORLD_LIST_PARAM) written by Terraform's control module.
+# The instance reads active-world at container-start (modules/compute run.sh) and
+# mounts /opt/minecraft/worlds/<name> as /data, so a switch only takes effect on
+# the next cold start. See docs/multi-world.md.
+# ---------------------------------------------------------------------------
+
+def _get_active_world() -> str:
+    """Current active world profile, or '' if unset/unreadable (best-effort)."""
+    param = os.environ.get("ACTIVE_WORLD_PARAM")
+    if not param:
+        return ""
+    try:
+        return _ssm.get_parameter(Name=param)["Parameter"]["Value"].strip()
+    except Exception as e:
+        logger.warning(f"Failed to read active world: {e}")
+        return ""
+
+
+def _get_world_list() -> list[str]:
+    """Known world profiles from the StringList param (comma-separated Value)."""
+    param = os.environ.get("WORLD_LIST_PARAM")
+    if not param:
+        return []
+    try:
+        raw = _ssm.get_parameter(Name=param)["Parameter"]["Value"]
+    except Exception as e:
+        logger.warning(f"Failed to read world list: {e}")
+        return []
+    return [w.strip() for w in raw.split(",") if w.strip()]
+
+
+def run_world_list() -> str:
+    worlds = _get_world_list()
+    if not worlds:
+        return "No world profiles are configured. Ask an admin to set `world_profiles` in the infra config."
+
+    active = _get_active_world()
+    rows = [f"{w}{'  ★ (active)' if w == active else ''}" for w in sorted(worlds)]
+    body = "\n".join(rows)
+    return (
+        f"**World profiles ({len(worlds)})**\n```\n{body}\n```\n"
+        "Switch with `/mc world set <name>` (admin), then `/mc stop` and `/mc start`."
+    )
+
+
+def run_world_set(instance_id: str, name: str) -> str:
+    name = (name or "").strip().lower()
+    if not WORLD_NAME_RE.match(name):
+        return f"`{name}` isn't a valid world name (1-32 chars: lowercase letters, digits, `_` or `-`)."
+
+    worlds = _get_world_list()
+    if worlds and name not in worlds:
+        available = ", ".join(f"`{w}`" for w in sorted(worlds))
+        return f"`{name}` is not a known world profile. Available: {available}."
+
+    param = os.environ.get("ACTIVE_WORLD_PARAM")
+    if not param:
+        return "World selection isn't configured (ACTIVE_WORLD_PARAM unset)."
+    _ssm.put_parameter(Name=param, Value=name, Type="String", Overwrite=True)
+
+    msg = f"Active world set to **{name}**."
+    if get_instance_state(instance_id) == "running":
+        msg += " The server is running now — the switch takes effect after `/mc stop` then `/mc start`."
+    else:
+        msg += " It loads on the next `/mc start`."
+    return msg
+
+
 def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str,
                    caller_name: str = "Someone", webhook_url: str = "") -> str:
     """Route a parsed command path to its implementation (async worker side)."""
@@ -884,6 +971,10 @@ def dispatch_async(path: tuple, args: dict, instance_id: str, rcon_password: str
         return run_waypoint_list()
     if path == ("waypoint", "remove"):
         return run_waypoint_remove(args.get("name", ""))
+    if path == ("world", "list"):
+        return run_world_list()
+    if path == ("world", "set"):
+        return run_world_set(instance_id, args.get("name", ""))
     return f"Unknown subcommand: `/mc {' '.join(path)}`. Try `/mc help`."
 
 

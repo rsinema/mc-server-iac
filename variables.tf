@@ -17,9 +17,15 @@ variable "server_name" {
 }
 
 variable "mc_volume_size" {
-  description = "Size of the EBS data volume in GB"
+  description = "Size of the EBS data volume in GB. Sized for multiple world profiles under /opt/minecraft/worlds/ (see docs/multi-world.md)."
   type        = number
-  default     = 10
+  default     = 25
+}
+
+variable "world_profiles" {
+  description = "Known Minecraft world profiles (e.g. [\"survival\", \"skyblock\"]). Seeds the world-list SSM param that /mc world list reads and /mc world set validates against. The first entry is the default the server boots if the active-world param is unset or invalid."
+  type        = list(string)
+  default     = ["survival"]
 }
 
 variable "mc_volume_type" {

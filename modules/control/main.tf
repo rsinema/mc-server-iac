@@ -22,6 +22,44 @@ resource "aws_ssm_parameter" "waypoints" {
   }
 }
 
+# Active world profile the instance boots. Read on the box at container-start
+# time (modules/compute run.sh) and by /mc status; written by /mc world set.
+# Seeded to the first known profile; ignore_changes leaves the live value to
+# the Lambda / operators after create — same pattern as the waypoints param.
+resource "aws_ssm_parameter" "active_world" {
+  name        = "/${var.server_name}/active-world"
+  description = "Name of the Minecraft world profile the server boots (subdir under /opt/minecraft/worlds/). Written by /mc world set."
+  type        = "String"
+  value       = length(var.world_profiles) > 0 ? var.world_profiles[0] : "survival"
+
+  tags = {
+    Project = "mc-server"
+  }
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Registry of known world profiles. The Lambda has no filesystem access, so the
+# set of switchable worlds lives here: /mc world list renders it and /mc world
+# set validates membership against it. Seeded from var.world_profiles; live
+# edits (e.g. a future /mc world add) are preserved via ignore_changes.
+resource "aws_ssm_parameter" "world_list" {
+  name        = "/${var.server_name}/world-list"
+  description = "Comma-separated list of known Minecraft world profiles for /mc world."
+  type        = "StringList"
+  value       = join(",", length(var.world_profiles) > 0 ? var.world_profiles : ["survival"])
+
+  tags = {
+    Project = "mc-server"
+  }
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 resource "aws_iam_role" "controller_lambda" {
   name = "${var.server_name}-controller-role"
 
@@ -109,6 +147,18 @@ resource "aws_iam_policy" "controller_lambda" {
         Resource = aws_ssm_parameter.waypoints.arn
       },
       {
+        Sid    = "WorldSelectReadWrite"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:PutParameter"
+        ]
+        Resource = [
+          aws_ssm_parameter.active_world.arn,
+          aws_ssm_parameter.world_list.arn
+        ]
+      },
+      {
         Sid    = "StatsBaselineSeed"
         Effect = "Allow"
         Action = [
@@ -151,6 +201,8 @@ resource "aws_lambda_function" "server_controller" {
       PLAYER_EMAIL_MAP_PARAM         = var.email_map_parameter_name
       STATS_BUCKET                   = var.stats_bucket_name
       WAYPOINTS_PARAM                = aws_ssm_parameter.waypoints.name
+      ACTIVE_WORLD_PARAM             = aws_ssm_parameter.active_world.name
+      WORLD_LIST_PARAM               = aws_ssm_parameter.world_list.name
     }
   }
 }
