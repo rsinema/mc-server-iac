@@ -43,14 +43,15 @@ survival stay vanilla while skyblock runs its own plugin set and config, with no
 | Decision | Choice | Rationale |
 |---|---|---|
 | Where profiles live | `/opt/minecraft/worlds/<name>/` on the current EBS volume | Same volume ⇒ same snapshots, no new storage resources |
-| How the active world is chosen | SSM param `/<server_name>/active-world`, read by a wrapper `ExecStart` script at boot | cloud-init `runcmd` only runs on **first** boot; `minecraft.service` starts on **every** boot, so selection must live in the service |
+| How the active world is chosen | SSM param `/<server_name>/stats/active-world`, read by a wrapper `ExecStart` script at boot | cloud-init `runcmd` only runs on **first** boot; `minecraft.service` starts on **every** boot, so selection must live in the service |
 | When a switch takes effect | Next cold start (`stop` → `start`) | Simplest and safe; no live container juggling |
 | Switching while running | **Warn and defer** — write the param, tell the caller it applies after `stop`/`start` | Avoids `ssm:SendCommand` and live-restart complexity |
 | Unknown / new profile on start | **Auto-create** an empty dir; itzg generates a fresh vanilla world there | New survival-style worlds "just work"; skyblock remains a deliberate pre-provision |
-| World registry (for `list` / validation) | SSM param `/<server_name>/world-list`, seeded from `var.world_profiles` | The Lambda has no filesystem access, so the set of known worlds must live in SSM |
+| World registry (for `list` / validation) | SSM param `/<server_name>/stats/world-list`, seeded from `var.world_profiles` | The Lambda has no filesystem access, so the set of known worlds must live in SSM |
 | Discord surface | `/mc world list`, `/mc world set <name>` (open to everyone, posts to channel), active world shown in `/mc status` | Mirrors the waypoint command shape; a switch affects all players so it's announced, not gated |
 | Whitelist & operator list | **Shared across all worlds** — canonical `/opt/minecraft/shared/{whitelist.json,ops.json}` bind-mounted into `/data` | One allowlist/admin set everywhere; `/mc whitelist add` and `/mc op` apply to every profile |
 | Stats / leaderboard | **Out of scope for now.** Stats sync follows the survival profile only | Keep the existing Enzy pipeline unchanged; skyblock sessions do not feed the leaderboard |
+| Per-profile MC version | Optional `<profile>/profile.env` (`MC_VERSION`, `PAPER_CHANNEL`) read by `run.sh`, else the server default | Plugin worlds lag the latest MC drop — skyblock pins to 26.1.x (BSkyBlock support) while survival tracks 26.2, all in one container definition |
 
 ### Critical detail
 
@@ -70,14 +71,14 @@ Lambda owns live contents after create):
 
 ```hcl
 resource "aws_ssm_parameter" "active_world" {
-  name  = "/${var.server_name}/active-world"
+  name  = "/${var.server_name}/stats/active-world"
   type  = "String"
   value = "survival"
   lifecycle { ignore_changes = [value] }
 }
 
 resource "aws_ssm_parameter" "world_list" {
-  name  = "/${var.server_name}/world-list"
+  name  = "/${var.server_name}/stats/world-list"
   type  = "StringList"
   value = join(",", var.world_profiles)  # e.g. "survival,skyblock"
   lifecycle { ignore_changes = [value] }
@@ -139,7 +140,7 @@ and mounts the selected profile:
 #!/bin/bash
 set -e
 DEFAULT=survival
-NAME=$(aws ssm get-parameter --name "/${server_name}/active-world" \
+NAME=$(aws ssm get-parameter --name "/${server_name}/stats/active-world" \
         --query 'Parameter.Value' --output text 2>/dev/null || echo "$DEFAULT")
 case "$NAME" in *[!a-z0-9_-]*|"") NAME=$DEFAULT ;; esac   # sanitize; fall back to survival
 DIR="/opt/minecraft/worlds/$NAME"

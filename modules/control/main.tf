@@ -26,8 +26,13 @@ resource "aws_ssm_parameter" "waypoints" {
 # time (modules/compute run.sh) and by /mc status; written by /mc world set.
 # Seeded to the first known profile; ignore_changes leaves the live value to
 # the Lambda / operators after create — same pattern as the waypoints param.
+#
+# Named under the /stats/ prefix (like waypoints) so it falls within the SSM
+# path the deploy user is already granted (MCServer-stats-job-policy scopes
+# PutParameter to /MCServerInstance/stats/*); avoids a separate IAM grant for
+# the deploy principal. It's a control-plane concern, not a stats one.
 resource "aws_ssm_parameter" "active_world" {
-  name        = "/${var.server_name}/active-world"
+  name        = "/${var.server_name}/stats/active-world"
   description = "Name of the Minecraft world profile the server boots (subdir under /opt/minecraft/worlds/). Written by /mc world set."
   type        = "String"
   value       = length(var.world_profiles) > 0 ? var.world_profiles[0] : "survival"
@@ -45,8 +50,11 @@ resource "aws_ssm_parameter" "active_world" {
 # set of switchable worlds lives here: /mc world list renders it and /mc world
 # set validates membership against it. Seeded from var.world_profiles; live
 # edits (e.g. a future /mc world add) are preserved via ignore_changes.
+#
+# Under the /stats/ prefix for the same reason as active_world above: it keeps
+# PutParameter within the path the deploy user is already granted.
 resource "aws_ssm_parameter" "world_list" {
-  name        = "/${var.server_name}/world-list"
+  name        = "/${var.server_name}/stats/world-list"
   description = "Comma-separated list of known Minecraft world profiles for /mc world."
   type        = "StringList"
   value       = join(",", length(var.world_profiles) > 0 ? var.world_profiles : ["survival"])

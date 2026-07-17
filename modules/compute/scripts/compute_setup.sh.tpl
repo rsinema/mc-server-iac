@@ -44,7 +44,7 @@ write_files:
       # a fresh world there); pre-provision plugin worlds like skyblock first.
       set -e
       DEFAULT=survival
-      NAME=$(aws ssm get-parameter --name "/${server_name}/active-world" \
+      NAME=$(aws ssm get-parameter --name "/${server_name}/stats/active-world" \
               --query 'Parameter.Value' --output text 2>/dev/null || echo "$${DEFAULT}")
       case "$${NAME}" in
           *[!a-z0-9_-]*|"") NAME=$${DEFAULT} ;;
@@ -71,14 +71,31 @@ write_files:
           fi
       done
 
+      # Per-profile Minecraft version / Paper channel override. A profile may
+      # pin itself to a version its plugins support by dropping a profile.env
+      # file (KEY=value lines) in its dir — e.g. skyblock's BentoBox/BSkyBlock
+      # only support 26.1.x, while survival tracks the ${minecraft_version}
+      # server default. Recognized keys: MC_VERSION, PAPER_CHANNEL. Values are
+      # charset-guarded; anything absent or malformed falls back to the default.
+      # See docs/multi-world.md.
+      MC_VERSION="${minecraft_version}"
+      PAPER_CHANNEL_VALUE="experimental"
+      OVERRIDE="$${DIR}/profile.env"
+      if [ -f "$${OVERRIDE}" ]; then
+          V=$(sed -n 's/^MC_VERSION=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
+          C=$(sed -n 's/^PAPER_CHANNEL=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
+          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}" ;; esac
+          case "$${C}" in default|experimental) PAPER_CHANNEL_VALUE="$${C}" ;; esac
+      fi
+
       exec /usr/bin/docker run \
           --name minecraft \
           -v "$${DIR}:/data" \
           -v "$${SHARED}/whitelist.json:/data/whitelist.json" \
           -v "$${SHARED}/ops.json:/data/ops.json" \
           -e TYPE=PAPER \
-          -e PAPER_CHANNEL=experimental \
-          -e VERSION=${minecraft_version} \
+          -e PAPER_CHANNEL="$${PAPER_CHANNEL_VALUE}" \
+          -e VERSION="$${MC_VERSION}" \
           -e MEMORY=${minecraft_memory}G \
           -e EULA=TRUE \
           -e ALLOW_FLIGHT=TRUE \

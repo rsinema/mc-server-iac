@@ -435,27 +435,44 @@ aws ssm get-parameter --region us-west-2 --name /MCServerInstance/stats/waypoint
 
 ## Multi-World Profiles (survival / skyblock / …)
 
-The server can host multiple worlds, one live at a time, on the same instance. Each **profile** is a full `/data` directory (its own `world/`, `server.properties`, `plugins/`, `whitelist.json`) under `/opt/minecraft/worlds/<name>/`. Which one boots is chosen at container-start from the SSM param `/MCServerInstance/active-world`. Design details: [multi-world.md](./multi-world.md).
+The server can host multiple worlds, one live at a time, on the same instance. Each **profile** is a full `/data` directory (its own `world/`, `server.properties`, `plugins/`, `whitelist.json`) under `/opt/minecraft/worlds/<name>/`. Which one boots is chosen at container-start from the SSM param `/MCServerInstance/stats/active-world`. Design details: [multi-world.md](./multi-world.md).
 
 **Everyday use (Discord):**
 
-- `/mc world list` — show profiles and which is active (reads `/MCServerInstance/world-list`).
+- `/mc world list` — show profiles and which is active (reads `/MCServerInstance/stats/world-list`).
 - `/mc world set name:<world>` — switch the active world (open to everyone; posts to the channel). It writes the SSM param; the switch takes effect on the **next cold start**, so the flow is `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
 - `/mc status` now shows the active world.
 
-**Adding a new world to the registry.** `/mc world set` only accepts names present in `/MCServerInstance/world-list`. Add one by appending to `world_profiles` in `terraform.tfvars` and `tofu apply` (the seed is `ignore_changes`, so also update the live param), or edit the param directly:
+**Adding a new world to the registry.** `/mc world set` only accepts names present in `/MCServerInstance/stats/world-list`. Add one by appending to `world_profiles` in `terraform.tfvars` and `tofu apply` (the seed is `ignore_changes`, so also update the live param), or edit the param directly:
 
 ```bash
-aws ssm put-parameter --region us-west-2 --name /MCServerInstance/world-list \
+aws ssm put-parameter --region us-west-2 --name /MCServerInstance/stats/world-list \
   --type StringList --overwrite --value "survival,skyblock"
 ```
 
-**Provisioning a plugin world (e.g. skyblock).** An unknown-but-valid profile is auto-created on start as a fresh vanilla world. For skyblock you want the plugin and generator in place *before* first boot:
+**Pinning a profile to a different Minecraft version.** `run.sh` runs one Minecraft version (`minecraft_version`, currently 26.2, on the `experimental` Paper channel) across all profiles by default. A profile can override this for itself with an optional `profile.env` file in its dir — recognized keys `MC_VERSION` and `PAPER_CHANNEL` (`default` = stable, or `experimental`). This is how skyblock stays on a version its plugins support while survival tracks the latest. Values are charset-guarded; anything malformed falls back to the server default.
 
-1. `/mc start` (any world), then open a shell: `aws ssm start-session --target <instance-id>`.
-2. `sudo mkdir -p /opt/minecraft/worlds/skyblock/plugins`
-3. Drop the skyblock plugin jar (e.g. BentoBox + BSkyBlock) into `.../skyblock/plugins/` and add a `.../skyblock/server.properties` with the desired `level-type`/generator. `sudo chown -R 1000:1000 /opt/minecraft/worlds/skyblock` (the itzg container runs as uid 1000).
-4. `/mc world set name:skyblock` → `/mc stop` → `/mc start`.
+**Provisioning skyblock (BentoBox + BSkyBlock, pinned to 26.1.2).** An unknown-but-valid profile auto-creates as a fresh vanilla world, but skyblock is a plugin + version pin, so provision it *before* the first switch. BSkyBlock 1.20.0 supports Paper 26.1.x (not 26.2), so the profile pins to **26.1.2**; BentoBox 3.20.0 needs Java 25+, which itzg selects automatically for a 26.1 build.
+
+1. Add `skyblock` to the live registry (the seed is `ignore_changes`, so the config default alone does **not** update it):
+   ```bash
+   aws ssm put-parameter --region us-west-2 --name /MCServerInstance/stats/world-list \
+     --type StringList --overwrite --value "survival,skyblock"
+   ```
+2. `/mc start` (any world), then open a shell: `aws ssm start-session --target <instance-id>`.
+3. Create the profile and drop in the plugins + version pin:
+   ```bash
+   sudo mkdir -p /opt/minecraft/worlds/skyblock/plugins
+   cd /opt/minecraft/worlds/skyblock/plugins
+   sudo curl -fsSLO https://github.com/BentoBoxWorld/BentoBox/releases/download/3.20.0/BentoBox-3.20.0.jar
+   sudo curl -fsSLO https://github.com/BentoBoxWorld/BSkyBlock/releases/download/1.20.0/BSkyBlock-1.20.0.jar
+   printf 'MC_VERSION=26.1.2\nPAPER_CHANNEL=default\n' | sudo tee /opt/minecraft/worlds/skyblock/profile.env
+   sudo chown -R 1000:1000 /opt/minecraft/worlds/skyblock   # itzg runs as uid 1000
+   ```
+4. `/mc world set name:skyblock` → `/mc stop` → `/mc start`. First boot downloads Paper 26.1.2 and generates BentoBox's `bskyblock_world`; give it a couple of minutes. Watch it come up with `sudo journalctl -u minecraft -f` (look for BentoBox + BSkyBlock enabling cleanly).
+5. In game, `/island` creates a player's island. Switch back anytime with `/mc world set name:survival` → `/mc stop` → `/mc start`.
+
+> If BSkyBlock still fails to enable on 26.1.2, bump `MC_VERSION` to another 26.1.x patch (or check for a newer BSkyBlock release) and restart — no infra change needed, just edit `profile.env`.
 
 **Notes.**
 - The stats leaderboard tracks the **survival** profile only; other worlds don't feed it.

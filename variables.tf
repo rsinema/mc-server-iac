@@ -25,7 +25,7 @@ variable "mc_volume_size" {
 variable "world_profiles" {
   description = "Known Minecraft world profiles (e.g. [\"survival\", \"skyblock\"]). Seeds the world-list SSM param that /mc world list reads and /mc world set validates against. The first entry is the default the server boots if the active-world param is unset or invalid."
   type        = list(string)
-  default     = ["survival"]
+  default     = ["survival", "skyblock"]
 }
 
 variable "mc_volume_type" {
