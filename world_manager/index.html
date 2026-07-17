@@ -110,7 +110,8 @@
             <option value="">— none —</option>
             <option value="vanilla">Vanilla-ish (Paper)</option>
             <option value="skyblock">BentoBox Skyblock</option>
-            <option value="fabric">Modded (Fabric) — v2</option>
+            <option value="cobblemon">Cobblemon (Fabric modpack)</option>
+            <option value="fabric">Modded (Fabric, hand-picked mods)</option>
           </select>
         </div>
       </div>
@@ -120,6 +121,7 @@
           <select id="f_type">
             <option>PAPER</option><option>VANILLA</option>
             <option>FABRIC</option><option>FORGE</option><option>NEOFORGE</option>
+            <option>MODRINTH</option>
           </select>
         </div>
         <div>
@@ -144,7 +146,10 @@
       <textarea id="f_properties" rows="2" placeholder="DIFFICULTY=normal"></textarea>
 
       <details>
-        <summary>Modded options (v2)</summary>
+        <summary>Modded options</summary>
+        <label>Modrinth modpack — <code>.mrpack</code> URL or slug (recommended for modded)</label>
+        <input id="f_mods_modpack" placeholder="cobblemon-fabric" />
+        <p class="muted" style="margin:4px 0 0">Sets the server to run this exact pack. Players install the <b>same</b> pack in the Modrinth App / Prism Launcher, so mod versions match automatically. The loader and MC version come from the pack.</p>
         <label>Mods — Modrinth slugs/ids (comma separated)</label>
         <input id="f_mods_modrinth" />
         <label>Mods — CurseForge file ids (comma separated)</label>
@@ -240,6 +245,10 @@ async function loadWorlds() {
       if (p.version) bits.push("v" + p.version);
       if (p.memory_gb) bits.push(p.memory_gb + "G");
       if (p.notes) bits.push(p.notes);
+      const modpack = p.mods && p.mods.modpack;
+      const packUrl = modpack
+        ? (modpack.startsWith("http") ? modpack : `https://modrinth.com/modpack/${modpack}`)
+        : null;
       const div = document.createElement("div");
       div.className = "world" + (w.active ? " active" : "");
       div.innerHTML = `
@@ -247,6 +256,7 @@ async function loadWorlds() {
           <div>
             <div class="name">${w.active ? '<span class="star">★</span> ' : ""}${w.name}</div>
             <div class="meta">${bits.join(" · ") || (w.profile ? "" : "legacy world (no profile document)")}</div>
+            ${packUrl ? `<div class="meta">🎒 Players install this pack (Modrinth App / Prism): <a href="${packUrl}" target="_blank" rel="noopener" style="color:var(--accent)">${modpack}</a></div>` : ""}
           </div>
           <div class="row">
             <button data-act="activate" data-name="${w.name}" ${w.active ? "disabled" : ""}>Activate</button>
@@ -291,7 +301,14 @@ const TEMPLATES = {
               url: "https://REPLACE-with-BSkyBlock-release-jar-url" }],
     notes: "BentoBox skyblock"
   },
-  fabric: { type: "FABRIC", notes: "modded (fabric)" },
+  fabric: { type: "FABRIC", memory_gb: 6,
+    mods: { modrinth: ["fabric-api"] },
+    notes: "modded (fabric)" },
+  cobblemon: {
+    type: "MODRINTH", memory_gb: 6,
+    mods: { modpack: "cobblemon-fabric" },
+    notes: "Cobblemon (Fabric modpack)"
+  },
 };
 
 function openEditor(name, profile) {
@@ -313,6 +330,7 @@ function fillForm(p) {
   $("f_plugins_modrinth").value = (pl.modrinth || []).join(", ");
   $("f_plugins_spiget").value = (pl.spiget || []).join(", ");
   $("f_plugins_urls").value = (pl.urls || []).join("\n");
+  $("f_mods_modpack").value = md.modpack || "";
   $("f_mods_modrinth").value = (md.modrinth || []).join(", ");
   $("f_mods_curseforge").value = (md.curseforge || []).join(", ");
   $("f_mods_urls").value = (md.urls || []).join("\n");
@@ -342,6 +360,7 @@ function buildProfile() {
   if (Object.keys(plugins).length) p.plugins = plugins;
 
   const mods = {};
+  if ($("f_mods_modpack").value.trim()) mods.modpack = $("f_mods_modpack").value.trim();
   if (commaList("f_mods_modrinth").length) mods.modrinth = commaList("f_mods_modrinth");
   if (commaList("f_mods_curseforge").length) mods.curseforge = commaList("f_mods_curseforge");
   if (lineList("f_mods_urls").length) mods.urls = lineList("f_mods_urls");

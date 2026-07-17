@@ -227,18 +227,25 @@ in place. If cross-Lambda packaging is awkward, acceptable v1 fallback is a mode
 
 ---
 
-## 5. v2 — modded worlds (Fabric / Forge / NeoForge)
+## 5. Modded worlds (implemented)
 
-Same machinery; the profile schema and `run.sh` do most of the work already. Deltas:
+Modded worlds run on the **same** profile/reconciler machinery. The preferred path is a **Modrinth modpack**, because it also solves client parity.
 
-| Area | v2 addition |
+| Area | How it works |
 |---|---|
-| Loader | Allow `type` ∈ `FABRIC | FORGE | NEOFORGE`; `run.sh` passes it straight to itzg `TYPE`. itzg installs the loader and picks the right Java for the MC version automatically |
-| Mod sources | Profile `mods: { modrinth: [...], curseforge: [...], urls: [...] }` → itzg `MODRINTH_PROJECTS` / `CURSEFORGE_FILES` / `MODS`. Modrinth **modpacks** via `MODRINTH_MODPACK` |
-| CurseForge auth | CurseForge downloads need an API key → store in Secrets Manager, inject as `CF_API_KEY`. Add the secret + IAM read + `run.sh` passthrough |
-| Memory / disk | Modded worlds are heavier — surface `memory_gb` prominently in the UI; likely bump `mc_volume_size` and consider whether `t4g.large` (8 GB) is enough for the heavier packs (may want a per-world instance-type note, out of scope to change automatically) |
-| Client parity | Mods require a **matching client**. The UI should display the world's loader + version + mod list, and ideally emit a client-side manifest (e.g. a Modrinth `.mrpack` reference or a copy-paste mod list) so players can install the right pack. This is the main *new* UX surface in v2 |
-| Version validation | Validate loader/MC/mod compatibility as best-effort warnings in the create form (e.g. flag when a pinned MC version has no build for the chosen loader) |
+| Loader | `type` ∈ `FABRIC | FORGE | NEOFORGE | QUILT` passes straight to itzg `TYPE`; itzg installs the loader and picks the right Java for the MC version automatically |
+| Individual mods | Profile `mods: { modrinth: [...], curseforge: [...], urls: [...] }` → itzg `MODRINTH_PROJECTS` / `CURSEFORGE_FILES` / `MODS`. `run.sh` sets `MODRINTH_DOWNLOAD_DEPENDENCIES=required` whenever Modrinth mods are present, so transitive deps (Fabric API, architectury, …) auto-install |
+| **Modpack (recommended)** | Profile `mods.modpack` = a Modrinth `.mrpack` URL **or** project slug (e.g. `cobblemon-fabric`). `run.sh` forces `TYPE=MODRINTH` and emits `MODRINTH_MODPACK=<value>`; the loader and MC version come **from the pack**, so `run.sh` skips the forced `VERSION` unless the profile pins one explicitly |
+| **Client parity** | Because the server runs a specific `.mrpack`, players install the **same** pack in the Modrinth App / Prism Launcher and their mod versions match automatically. The UI surfaces the pack link per world (`🎒 Players install this pack …`), which is the client "manifest" |
+| CurseForge | `mods.curseforge` (file IDs) + `cf_api_key` → `CURSEFORGE_FILES` + `CF_API_KEY`. Full CF *modpacks* (`TYPE=AUTO_CURSEFORGE`) are not wired yet — Modrinth is the supported modpack path |
+| Memory | Per-world `memory_gb` (the modded templates default to 6). Big Forge/NeoForge packs may need more than `t4g.large` (8 GB) can give the JVM — bump `memory_gb` and consider a larger instance for heavy packs |
+
+Templates: **Cobblemon (Fabric modpack)** — pinned to the `cobblemon-fabric` Modrinth slug — and **Modded (Fabric, hand-picked mods)**.
+
+### Still open (future)
+- Loader/MC/mod **compatibility validation** (best-effort warnings in the create form).
+- CurseForge **modpack** flow (`AUTO_CURSEFORGE` + `CF_*` selectors).
+- Auto-bumping memory/volume for heavy packs (today it's a manual `memory_gb`).
 
 Everything else — CRUD, switch-and-restart, auth, hosting — is unchanged from v1.
 

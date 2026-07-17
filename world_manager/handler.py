@@ -39,13 +39,18 @@ _token_cache: str | None = None
 _rcon_password_cache: str | None = None
 
 WORLD_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
-# Server types run.sh / itzg understand. PAPER + VANILLA are v1 (plugins); the
-# loaders are v2 (modded). Kept permissive here so v2 needs no backend change.
-ALLOWED_TYPES = {"PAPER", "VANILLA", "FABRIC", "FORGE", "NEOFORGE", "SPIGOT", "PURPUR", "QUILT"}
+# Server types run.sh / itzg understand. PAPER + VANILLA are plugin worlds; the
+# loaders (FABRIC/FORGE/NEOFORGE/QUILT) are modded worlds; MODRINTH is the
+# modpack flow (loader/version come from the pack). Kept permissive so the
+# reconciler needs no allowlist change per type.
+ALLOWED_TYPES = {"PAPER", "VANILLA", "FABRIC", "FORGE", "NEOFORGE", "SPIGOT", "PURPUR", "QUILT", "MODRINTH"}
 VERSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 # Artifact-list token (Modrinth slug/id, Spiget id, CurseForge file id). Kept
 # tight so nothing exotic reaches an itzg env var / download path.
 TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")
+# A Modrinth modpack reference: a project slug/id (e.g. "cobblemon-fabric") or a
+# Modrinth project/version page URL. https URLs are validated separately.
+MODPACK_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PROP_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
 # ---------------------------------------------------------------------------
@@ -337,6 +342,16 @@ def validate_profile(profile) -> tuple[dict, str | None]:
             return {}, err
         if vals:
             mods[key] = vals
+    # Modrinth modpack: a single .mrpack the server runs and players install for
+    # client parity. Accept an https:// URL (pack/version page or hosted .mrpack)
+    # or a project slug/id. The reconciler renders this to MODRINTH_MODPACK and
+    # forces TYPE=MODRINTH (loader + version come from the pack).
+    modpack = mods_in.get("modpack")
+    if modpack not in (None, ""):
+        mp = str(modpack).strip()
+        if not (mp.startswith("https://") or MODPACK_SLUG_RE.match(mp)):
+            return {}, "mods.modpack must be an https:// URL or a Modrinth slug/id"
+        mods["modpack"] = mp
     if mods:
         cleaned["mods"] = mods
 

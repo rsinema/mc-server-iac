@@ -519,6 +519,15 @@ A browser UI ([design: webui.md](./webui.md)) for managing worlds — list, swit
 2. Replace the placeholder BSkyBlock URL with the real release jar URL (e.g. the BSkyBlock GitHub release asset). Adjust the version/addon as needed.
 3. Check **activate & restart after save** → **Save**. The instance stops/starts; on boot `run.sh` downloads BentoBox (via Modrinth) and the addon (via `files`), then generates the skyblock world. Watch with `sudo journalctl -u minecraft -f` — you want **`Loaded 1 addons`**.
 
+**Creating a modded world (Modrinth modpack — recommended).** A modpack is the easiest modded path because the server and every player run the *same* `.mrpack`, so client mod versions match automatically.
+
+1. **+ New world** → name it (e.g. `cobblemon`) → Template **Cobblemon (Fabric modpack)**. That pre-fills `type=MODRINTH`, `memory_gb=6`, and `mods.modpack = cobblemon-fabric`. For a different pack, put its Modrinth slug or `.mrpack` URL in the **Modrinth modpack** field instead.
+2. Check **activate & restart after save** → **Save**. On boot `run.sh` sets `TYPE=MODRINTH` + `MODRINTH_MODPACK`; itzg installs the loader and downloads the pack (the pack dictates the loader + MC version, so leave version blank). First boot takes a few minutes; watch `sudo journalctl -u minecraft -f`.
+3. **Players join** by installing the *same* pack. The world row shows a `🎒 Players install this pack` link — open it in the **Modrinth App** (Browse → Install) or **Prism Launcher** (Add Instance → Import from URL). No manual mod matching.
+4. Hand-picked mods instead of a pack: use the **Modded (Fabric)** template or fill `mods.modrinth` / mod URLs. `run.sh` auto-installs dependencies. Note: individual mods give players no single artifact — they must match the mod list by hand, which is why a modpack is preferred.
+
+> Modded packs are heavier than vanilla/Paper. The templates default `memory_gb=6`; large Forge/NeoForge packs may need more than the current instance can give the JVM — raise `memory_gb`, and consider a bigger instance for the heaviest packs. CurseForge *modpacks* aren't wired yet; Modrinth is the supported modpack path.
+
 **Rotating the token.** Overwrite the secret value (same command as setup); the Lambda picks up the new token on its next cold start (or force one with a no-op `tofu apply`). Everyone re-enters the new token.
 
 **Break-glass.** The UI is a convenience over SSM; the manual Discord commands and the `aws ssm` / `start-session` procedures above still work unchanged if the UI is unavailable.

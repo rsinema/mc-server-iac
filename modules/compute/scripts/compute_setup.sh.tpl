@@ -92,12 +92,18 @@ write_files:
       TYPE_VALUE="PAPER"
       MEMORY_VALUE="${minecraft_memory}G"
       ENV_ARGS=()
+      # VERSION_EXPLICIT tracks whether a specific MC version was requested. It
+      # stays 0 for a modpack with no explicit version, so we let the pack pick
+      # its own MC version instead of forcing the server default (which would
+      # filter out every real pack build). MODPACK holds the .mrpack reference.
+      VERSION_EXPLICIT=0
+      MODPACK=""
 
       OVERRIDE="$${DIR}/profile.env"
       if [ -f "$${OVERRIDE}" ]; then
           V=$(sed -n 's/^MC_VERSION=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
           C=$(sed -n 's/^PAPER_CHANNEL=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
-          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}" ;; esac
+          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}"; VERSION_EXPLICIT=1 ;; esac
           case "$${C}" in default|experimental) PAPER_CHANNEL_VALUE="$${C}" ;; esac
       fi
 
@@ -112,7 +118,7 @@ write_files:
           T=$(echo "$${PROFILE_JSON}" | jq -r '.type // empty')
           case "$${T}" in ""|*[!A-Za-z]*) : ;; *) TYPE_VALUE="$${T}" ;; esac
           V=$(echo "$${PROFILE_JSON}" | jq -r '.version // empty')
-          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}" ;; esac
+          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}"; VERSION_EXPLICIT=1 ;; esac
           M=$(echo "$${PROFILE_JSON}" | jq -r '.memory_gb // empty')
           case "$${M}" in ""|*[!0-9]*) : ;; *) MEMORY_VALUE="$${M}G" ;; esac
 
@@ -131,6 +137,23 @@ write_files:
           [ -n "$${PLUGIN_URLS}" ] && ENV_ARGS+=( -e "PLUGINS=$${PLUGIN_URLS}" )
           [ -n "$${MOD_CURSE}" ] && ENV_ARGS+=( -e "CURSEFORGE_FILES=$${MOD_CURSE}" )
           [ -n "$${MOD_URLS}" ] && ENV_ARGS+=( -e "MODS=$${MOD_URLS}" )
+
+          # Modrinth modpack (.mrpack): the server runs the exact pack players
+          # install, so client mod versions match automatically. Forces
+          # TYPE=MODRINTH; loader + MC version come from the pack (so we skip the
+          # forced VERSION below unless the profile pinned one explicitly).
+          MODPACK=$(echo "$${PROFILE_JSON}" | jq -r '.mods.modpack // empty')
+          if [ -n "$${MODPACK}" ]; then
+              TYPE_VALUE="MODRINTH"
+              ENV_ARGS+=( -e "MODRINTH_MODPACK=$${MODPACK}" )
+          fi
+
+          # Auto-install transitive dependencies (Fabric API, architectury, …)
+          # for individually listed Modrinth mods — the usual "mod won't load"
+          # cause. Harmless for modpacks, which bundle their own dependencies.
+          if [ -n "$${MODRINTH_ALL}" ] || [ -n "$${MODPACK}" ]; then
+              ENV_ARGS+=( -e "MODRINTH_DOWNLOAD_DEPENDENCIES=required" )
+          fi
 
           # Optional CurseForge API key (needed for CURSEFORGE_FILES downloads).
           CF_KEY=$(echo "$${PROFILE_JSON}" | jq -r '.cf_api_key // empty')
@@ -174,6 +197,12 @@ write_files:
           done < <(echo "$${PROFILE_JSON}" | jq -c '.files // [] | .[]')
       fi
 
+      # Force an explicit MC version for everything except a modpack that should
+      # pick its own (VERSION would otherwise filter out the pack's real builds).
+      if [ -z "$${MODPACK}" ] || [ "$${VERSION_EXPLICIT}" = "1" ]; then
+          ENV_ARGS+=( -e "VERSION=$${MC_VERSION}" )
+      fi
+
       exec /usr/bin/docker run \
           --name minecraft \
           -v "$${DIR}:/data" \
@@ -181,7 +210,6 @@ write_files:
           -v "$${SHARED}/ops.json:/data/ops.json" \
           -e TYPE="$${TYPE_VALUE}" \
           -e PAPER_CHANNEL="$${PAPER_CHANNEL_VALUE}" \
-          -e VERSION="$${MC_VERSION}" \
           -e MEMORY="$${MEMORY_VALUE}" \
           -e EULA=TRUE \
           -e ALLOW_FLIGHT=TRUE \
