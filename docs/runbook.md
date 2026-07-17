@@ -460,19 +460,29 @@ aws ssm put-parameter --region us-west-2 --name /MCServerInstance/stats/world-li
      --type StringList --overwrite --value "survival,skyblock"
    ```
 2. `/mc start` (any world), then open a shell: `aws ssm start-session --target <instance-id>`.
-3. Create the profile and drop in the plugins + version pin:
+3. Create the profile and drop in the plugin + gamemode addon + version pin.
+   **BentoBox is a plugin (goes in `plugins/`); BSkyBlock is a BentoBox _addon_ and
+   must go in `plugins/BentoBox/addons/`.** Putting the addon jar in `plugins/`
+   loads it as a plugin but registers *0 gamemodes* — the world stays vanilla and
+   `/island` doesn't exist. (`addons/` is auto-created on BentoBox's first boot;
+   `mkdir -p` it up front so you can place both in one pass.)
    ```bash
-   sudo mkdir -p /opt/minecraft/worlds/skyblock/plugins
-   cd /opt/minecraft/worlds/skyblock/plugins
-   sudo curl -fsSLO https://github.com/BentoBoxWorld/BentoBox/releases/download/3.20.0/BentoBox-3.20.0.jar
-   sudo curl -fsSLO https://github.com/BentoBoxWorld/BSkyBlock/releases/download/1.20.0/BSkyBlock-1.20.0.jar
+   sudo mkdir -p /opt/minecraft/worlds/skyblock/plugins/BentoBox/addons
+   # BentoBox framework -> plugins/
+   sudo curl -fsSL -o /opt/minecraft/worlds/skyblock/plugins/BentoBox-3.20.0.jar \
+     https://github.com/BentoBoxWorld/BentoBox/releases/download/3.20.0/BentoBox-3.20.0.jar
+   # BSkyBlock gamemode addon -> plugins/BentoBox/addons/
+   sudo curl -fsSL -o /opt/minecraft/worlds/skyblock/plugins/BentoBox/addons/BSkyBlock-1.20.0.jar \
+     https://github.com/BentoBoxWorld/BSkyBlock/releases/download/1.20.0/BSkyBlock-1.20.0.jar
    printf 'MC_VERSION=26.1.2\nPAPER_CHANNEL=default\n' | sudo tee /opt/minecraft/worlds/skyblock/profile.env
-   sudo chown -R 1000:1000 /opt/minecraft/worlds/skyblock   # itzg runs as uid 1000
+   sudo chown -R 1000:1000 /opt/minecraft/worlds/skyblock   # itzg runs as uid 1000 (= host ec2-user)
    ```
-4. `/mc world set name:skyblock` → `/mc stop` → `/mc start`. First boot downloads Paper 26.1.2 and generates BentoBox's `bskyblock_world`; give it a couple of minutes. Watch it come up with `sudo journalctl -u minecraft -f` (look for BentoBox + BSkyBlock enabling cleanly).
-5. In game, `/island` creates a player's island. Switch back anytime with `/mc world set name:survival` → `/mc stop` → `/mc start`.
+4. `/mc world set name:skyblock` → `/mc stop` → `/mc start`. First boot downloads Paper 26.1.2 and generates `bskyblock_world` (+ nether/end); give it a couple of minutes. Watch with `sudo journalctl -u minecraft -f` — you want **`Loaded 1 addons`** (not 0) and BentoBox + BSkyBlock enabling cleanly.
+5. In game, `/island` (or `/is`) creates a player's own island. Switch back anytime with `/mc world set name:survival` → `/mc stop` → `/mc start`.
 
-> If BSkyBlock still fails to enable on 26.1.2, bump `MC_VERSION` to another 26.1.x patch (or check for a newer BSkyBlock release) and restart — no infra change needed, just edit `profile.env`.
+> **Version fallback:** if BSkyBlock fails to enable on 26.1.2, bump `MC_VERSION` to another 26.1.x patch (or grab a newer BSkyBlock release) and restart — no infra change, just edit `profile.env`.
+>
+> **Playing together:** BSkyBlock is one-island-per-player by default. To share an island, the owner runs `/island team invite <player>` and the invitee runs `/island team accept` (raise `max-team-size` in `plugins/BentoBox/addons/BSkyBlock/config.yml` if the whole group wants one island). `/island trust <player>` grants build rights without merging teams.
 
 **Notes.**
 - The stats leaderboard tracks the **survival** profile only; other worlds don't feed it.
