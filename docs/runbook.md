@@ -492,6 +492,39 @@ aws ssm put-parameter --region us-west-2 --name /MCServerInstance/stats/world-li
 
 ---
 
+## World Manager Web UI
+
+A browser UI ([design: webui.md](./webui.md)) for managing worlds — list, switch, start/stop, and **create/edit/delete** — so provisioning a plugin world no longer needs the hand-run SSM session above. It is a Lambda + Function URL gated by a shared bearer token; it edits the same SSM params as the Discord commands, and worlds still take effect on the next cold start.
+
+**How it works.** Each world created/edited in the UI is stored as a JSON *profile document* in SSM at `/MCServerInstance/stats/worlds/<name>`. On every `start`, the on-box `run.sh` reconciles the active world's document: it renders `type`/`version`/`memory`/plugin+mod lists into itzg env vars (itzg auto-downloads them) and downloads any explicit `files` to their exact paths (e.g. a BentoBox addon under `plugins/BentoBox/addons/`). So creating a plugin world is declarative — no shell session.
+
+**One-time setup.**
+
+1. Set the shared token (any secret string; share it with trusted users):
+   ```bash
+   ARN=$(tofu output -raw webui_token_secret_arn)
+   aws secretsmanager put-secret-value --region us-west-2 --secret-id "$ARN" \
+     --secret-string "$(openssl rand -hex 32)"
+   ```
+2. Get the URL and open it in a browser; enter the token when prompted:
+   ```bash
+   tofu output -raw webui_url
+   ```
+
+**Everyday use.** The Server panel shows state / IP / players / active world with Start / Stop buttons. Each world row has **Activate** (choose "switch & restart now", ~1 min, or defer to the next start), **Edit**, and **Delete** (soft — drops it from the registry and its profile document; the world files on disk are left in place, reclaim manually if needed; the active world can't be deleted).
+
+**Creating skyblock from the UI** (the declarative equivalent of the manual flow above):
+
+1. **+ New world** → name `skyblock` → Template **BentoBox Skyblock** (pre-fills type PAPER, version 26.1.2, `plugins.modrinth = [bentobox]`, and a `files` entry for the BSkyBlock addon at `plugins/BentoBox/addons/BSkyBlock.jar`).
+2. Replace the placeholder BSkyBlock URL with the real release jar URL (e.g. the BSkyBlock GitHub release asset). Adjust the version/addon as needed.
+3. Check **activate & restart after save** → **Save**. The instance stops/starts; on boot `run.sh` downloads BentoBox (via Modrinth) and the addon (via `files`), then generates the skyblock world. Watch with `sudo journalctl -u minecraft -f` — you want **`Loaded 1 addons`**.
+
+**Rotating the token.** Overwrite the secret value (same command as setup); the Lambda picks up the new token on its next cold start (or force one with a no-op `tofu apply`). Everyone re-enters the new token.
+
+**Break-glass.** The UI is a convenience over SSM; the manual Discord commands and the `aws ssm` / `start-session` procedures above still work unchanged if the UI is unavailable.
+
+---
+
 ## How to Update the Discord Public Key
 
 Discord owns the signing key pair. Your Lambda only needs the **public key** to verify

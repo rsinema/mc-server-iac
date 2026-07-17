@@ -116,6 +116,16 @@ module "control" {
   stats_bucket_arn               = module.stats.bucket_arn
 }
 
+# World-manager web UI module
+module "webui" {
+  source = "./modules/webui"
+
+  server_name              = var.server_name
+  instance_id              = module.compute.instance_id
+  rcon_password_secret_arn = aws_secretsmanager_secret.rcon_password.arn
+  idle_stop_alarm_name     = "${var.server_name}-idle-stop"
+}
+
 # DNS module
 module "dns" {
   source = "./modules/dns"

@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MC World Manager</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1e2127; --panel2: #262a32; --line: #333842;
+    --fg: #e6e8eb; --muted: #9aa2ad; --accent: #5b9dd9;
+    --good: #57a773; --warn: #d98b5b; --bad: #d95b5b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, select, textarea { background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 14px;
+    font-family: inherit; width: 100%; }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--line); }
+  .pill.running { color: var(--good); border-color: var(--good); }
+  .pill.stopped { color: var(--muted); }
+  .pill.pending { color: var(--warn); border-color: var(--warn); }
+  .world { border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    margin-bottom: 10px; }
+  .world.active { border-color: var(--accent); }
+  .world .name { font-weight: 600; font-size: 15px; }
+  .world .meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .star { color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 16px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--bad); }
+  details summary { cursor: pointer; color: var(--muted); margin: 10px 0; }
+  .hidden { display: none; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌍 MC World Manager</h1>
+  <span id="serverPill" class="pill stopped">unknown</span>
+  <span style="flex:1"></span>
+  <button id="logout" class="hidden">Change token</button>
+</header>
+<main>
+  <!-- Token gate -->
+  <div id="gate" class="panel hidden">
+    <h2>Access token</h2>
+    <p class="muted">Enter the shared world-manager token to continue.</p>
+    <div class="row">
+      <input id="tokenInput" type="password" placeholder="token" style="flex:1" />
+      <button class="primary" id="tokenSave">Enter</button>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <div class="panel">
+      <div class="row spread">
+        <h2 style="margin:0">Server</h2>
+        <div class="row">
+          <button id="btnStart">Start</button>
+          <button id="btnStop">Stop</button>
+          <button id="btnRefresh">Refresh</button>
+        </div>
+      </div>
+      <div id="serverInfo" class="muted" style="margin-top:10px">Loading…</div>
+    </div>
+
+    <div class="panel">
+      <div class="row spread">
+        <h2 style="margin:0">Worlds</h2>
+        <button class="primary" id="btnNew">+ New world</button>
+      </div>
+      <div id="worlds" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Create / edit form -->
+    <div id="editor" class="panel hidden">
+      <h2 id="editorTitle">New world</h2>
+      <div class="grid2">
+        <div>
+          <label>Name (lowercase, a-z 0-9 _ -)</label>
+          <input id="f_name" placeholder="skyblock" />
+        </div>
+        <div>
+          <label>Template</label>
+          <select id="f_template">
+            <option value="">— none —</option>
+            <option value="vanilla">Vanilla-ish (Paper)</option>
+            <option value="skyblock">BentoBox Skyblock</option>
+            <option value="fabric">Modded (Fabric) — v2</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label>Type</label>
+          <select id="f_type">
+            <option>PAPER</option><option>VANILLA</option>
+            <option>FABRIC</option><option>FORGE</option><option>NEOFORGE</option>
+          </select>
+        </div>
+        <div>
+          <label>Version (blank = server default)</label>
+          <input id="f_version" placeholder="26.1.2" />
+        </div>
+      </div>
+      <label>Memory GB (blank = server default)</label>
+      <input id="f_memory" type="number" min="1" max="64" placeholder="6" />
+
+      <label>Plugins — Modrinth slugs/ids (comma separated)</label>
+      <input id="f_plugins_modrinth" placeholder="bentobox" />
+      <label>Plugins — SpigotMC resource ids (comma separated)</label>
+      <input id="f_plugins_spiget" placeholder="1234, 5678" />
+      <label>Plugin jar URLs (one https URL per line)</label>
+      <textarea id="f_plugins_urls" rows="2"></textarea>
+
+      <label>Files — exact placement, one per line: <code>dest/path.jar https://url</code></label>
+      <textarea id="f_files" rows="3" placeholder="plugins/BentoBox/addons/BSkyBlock.jar https://…/BSkyBlock.jar"></textarea>
+
+      <label>server.properties overrides (one <code>KEY=value</code> per line)</label>
+      <textarea id="f_properties" rows="2" placeholder="DIFFICULTY=normal"></textarea>
+
+      <details>
+        <summary>Modded options (v2)</summary>
+        <label>Mods — Modrinth slugs/ids (comma separated)</label>
+        <input id="f_mods_modrinth" />
+        <label>Mods — CurseForge file ids (comma separated)</label>
+        <input id="f_mods_curseforge" />
+        <label>Mod jar URLs (one https URL per line)</label>
+        <textarea id="f_mods_urls" rows="2"></textarea>
+        <label>CurseForge API key (only if using CurseForge)</label>
+        <input id="f_cf_api_key" type="password" />
+      </details>
+
+      <label>Notes</label>
+      <input id="f_notes" />
+
+      <div class="row" style="margin-top:14px">
+        <button class="primary" id="btnSave">Save</button>
+        <button id="btnCancel">Cancel</button>
+        <span style="flex:1"></span>
+        <label class="row" style="margin:0; gap:6px; color:var(--fg)">
+          <input type="checkbox" id="f_activate_after" style="width:auto" />
+          <span class="muted">activate &amp; restart after save</span>
+        </label>
+      </div>
+    </div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const TOKEN_KEY = "mc_wm_token";
+let editingName = null; // null => creating
+
+function token() { return sessionStorage.getItem(TOKEN_KEY) || ""; }
+function $(id) { return document.getElementById(id); }
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  setTimeout(() => (t.className = ""), 3200);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { "Authorization": "Bearer " + token() } };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  if (res.status === 401) { showGate(); throw new Error("Unauthorized — check your token."); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+function showGate() {
+  $("gate").classList.remove("hidden");
+  $("app").classList.add("hidden");
+  $("logout").classList.add("hidden");
+}
+function showApp() {
+  $("gate").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("logout").classList.remove("hidden");
+  refresh();
+}
+
+// ---- server status ----
+async function loadServer() {
+  try {
+    const s = await api("GET", "/api/server");
+    const pill = $("serverPill");
+    pill.textContent = s.state;
+    pill.className = "pill " + (s.state === "running" ? "running" : s.state === "stopped" ? "stopped" : "pending");
+    $("serverInfo").innerHTML =
+      `State: <b>${s.state}</b>` +
+      (s.ip ? ` &nbsp;·&nbsp; <code>${s.ip}:25565</code>` : "") +
+      ` &nbsp;·&nbsp; Players: <b>${s.players}</b>` +
+      ` &nbsp;·&nbsp; Active world: <b>${s.active_world || "—"}</b>`;
+  } catch (e) { $("serverInfo").textContent = e.message; }
+}
+
+// ---- worlds ----
+async function loadWorlds() {
+  const box = $("worlds");
+  try {
+    const { worlds } = await api("GET", "/api/worlds");
+    if (!worlds.length) { box.innerHTML = '<p class="muted">No worlds yet. Create one.</p>'; return; }
+    box.innerHTML = "";
+    for (const w of worlds) {
+      const p = w.profile || {};
+      const bits = [];
+      if (p.type) bits.push(p.type);
+      if (p.version) bits.push("v" + p.version);
+      if (p.memory_gb) bits.push(p.memory_gb + "G");
+      if (p.notes) bits.push(p.notes);
+      const div = document.createElement("div");
+      div.className = "world" + (w.active ? " active" : "");
+      div.innerHTML = `
+        <div class="row spread">
+          <div>
+            <div class="name">${w.active ? '<span class="star">★</span> ' : ""}${w.name}</div>
+            <div class="meta">${bits.join(" · ") || (w.profile ? "" : "legacy world (no profile document)")}</div>
+          </div>
+          <div class="row">
+            <button data-act="activate" data-name="${w.name}" ${w.active ? "disabled" : ""}>Activate</button>
+            <button data-act="edit" data-name="${w.name}">Edit</button>
+            <button class="danger" data-act="delete" data-name="${w.name}" ${w.active ? "disabled" : ""}>Delete</button>
+          </div>
+        </div>`;
+      box.appendChild(div);
+    }
+    box.querySelectorAll("button[data-act]").forEach(b => {
+      b.onclick = () => worldAction(b.dataset.act, b.dataset.name);
+    });
+  } catch (e) { box.innerHTML = `<p class="muted">${e.message}</p>`; }
+}
+
+async function worldAction(act, name) {
+  if (act === "activate") {
+    const restart = confirm(`Activate "${name}"?\n\nOK = switch and restart the server now (~1 min).\nCancel = just set active; it loads on the next start.`);
+    try {
+      const r = await api("POST", `/api/worlds/${name}/activate`, { restart });
+      toast(r.note || "done");
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  } else if (act === "edit") {
+    const { worlds } = await api("GET", "/api/worlds");
+    const w = worlds.find(x => x.name === name);
+    openEditor(name, w ? w.profile : null);
+  } else if (act === "delete") {
+    if (!confirm(`Delete world "${name}"?\n\nThis removes it from the registry and its profile. The world files on disk are left in place.`)) return;
+    try { await api("DELETE", "/api/worlds/" + name); toast("deleted " + name); refresh(); }
+    catch (e) { toast(e.message, true); }
+  }
+}
+
+// ---- editor ----
+const TEMPLATES = {
+  vanilla: { type: "PAPER" },
+  skyblock: {
+    type: "PAPER", version: "26.1.2",
+    plugins: { modrinth: ["bentobox"] },
+    files: [{ dest: "plugins/BentoBox/addons/BSkyBlock.jar",
+              url: "https://REPLACE-with-BSkyBlock-release-jar-url" }],
+    notes: "BentoBox skyblock"
+  },
+  fabric: { type: "FABRIC", notes: "modded (fabric)" },
+};
+
+function openEditor(name, profile) {
+  editingName = name; // null when creating
+  $("editorTitle").textContent = name ? `Edit "${name}"` : "New world";
+  $("f_name").value = name || "";
+  $("f_name").disabled = !!name;
+  $("f_template").value = "";
+  fillForm(profile || {});
+  $("editor").classList.remove("hidden");
+  $("editor").scrollIntoView({ behavior: "smooth" });
+}
+
+function fillForm(p) {
+  $("f_type").value = p.type || "PAPER";
+  $("f_version").value = p.version || "";
+  $("f_memory").value = p.memory_gb || "";
+  const pl = p.plugins || {}, md = p.mods || {};
+  $("f_plugins_modrinth").value = (pl.modrinth || []).join(", ");
+  $("f_plugins_spiget").value = (pl.spiget || []).join(", ");
+  $("f_plugins_urls").value = (pl.urls || []).join("\n");
+  $("f_mods_modrinth").value = (md.modrinth || []).join(", ");
+  $("f_mods_curseforge").value = (md.curseforge || []).join(", ");
+  $("f_mods_urls").value = (md.urls || []).join("\n");
+  $("f_cf_api_key").value = p.cf_api_key || "";
+  $("f_files").value = (p.files || []).map(f => `${f.dest} ${f.url}`).join("\n");
+  $("f_properties").value = Object.entries(p.properties || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+  $("f_notes").value = p.notes || "";
+  $("f_activate_after").checked = false;
+}
+
+function commaList(id) {
+  return $(id).value.split(",").map(s => s.trim()).filter(Boolean);
+}
+function lineList(id) {
+  return $(id).value.split("\n").map(s => s.trim()).filter(Boolean);
+}
+
+function buildProfile() {
+  const p = { type: $("f_type").value };
+  if ($("f_version").value.trim()) p.version = $("f_version").value.trim();
+  if ($("f_memory").value.trim()) p.memory_gb = parseInt($("f_memory").value, 10);
+
+  const plugins = {};
+  if (commaList("f_plugins_modrinth").length) plugins.modrinth = commaList("f_plugins_modrinth");
+  if (commaList("f_plugins_spiget").length) plugins.spiget = commaList("f_plugins_spiget");
+  if (lineList("f_plugins_urls").length) plugins.urls = lineList("f_plugins_urls");
+  if (Object.keys(plugins).length) p.plugins = plugins;
+
+  const mods = {};
+  if (commaList("f_mods_modrinth").length) mods.modrinth = commaList("f_mods_modrinth");
+  if (commaList("f_mods_curseforge").length) mods.curseforge = commaList("f_mods_curseforge");
+  if (lineList("f_mods_urls").length) mods.urls = lineList("f_mods_urls");
+  if (Object.keys(mods).length) p.mods = mods;
+  if ($("f_cf_api_key").value.trim()) p.cf_api_key = $("f_cf_api_key").value.trim();
+
+  const files = [];
+  for (const line of lineList("f_files")) {
+    const idx = line.search(/\s/);
+    if (idx < 0) throw new Error(`file line needs "dest url": ${line}`);
+    files.push({ dest: line.slice(0, idx), url: line.slice(idx).trim() });
+  }
+  if (files.length) p.files = files;
+
+  const props = {};
+  for (const line of lineList("f_properties")) {
+    const eq = line.indexOf("=");
+    if (eq < 0) throw new Error(`property line needs "KEY=value": ${line}`);
+    props[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  if (Object.keys(props).length) p.properties = props;
+
+  if ($("f_notes").value.trim()) p.notes = $("f_notes").value.trim();
+  return p;
+}
+
+async function saveWorld() {
+  let profile;
+  try { profile = buildProfile(); } catch (e) { return toast(e.message, true); }
+  try {
+    if (editingName) {
+      await api("PUT", "/api/worlds/" + editingName, { profile });
+      toast("saved " + editingName);
+    } else {
+      const name = $("f_name").value.trim().toLowerCase();
+      const r = await api("POST", "/api/worlds", { name, profile });
+      editingName = r.name;
+      toast("created " + r.name);
+    }
+    if ($("f_activate_after").checked && editingName) {
+      const r = await api("POST", `/api/worlds/${editingName}/activate`, { restart: true });
+      toast(r.note || "activating");
+    }
+    $("editor").classList.add("hidden");
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function refresh() { loadServer(); loadWorlds(); }
+
+// ---- wiring ----
+$("tokenSave").onclick = () => {
+  const v = $("tokenInput").value.trim();
+  if (!v) return;
+  sessionStorage.setItem(TOKEN_KEY, v);
+  $("tokenInput").value = "";
+  showApp();
+};
+$("tokenInput").addEventListener("keydown", e => { if (e.key === "Enter") $("tokenSave").click(); });
+$("logout").onclick = () => { sessionStorage.removeItem(TOKEN_KEY); showGate(); };
+$("btnRefresh").onclick = refresh;
+$("btnStart").onclick = async () => { try { await api("POST", "/api/server/start"); toast("starting"); refresh(); } catch (e) { toast(e.message, true); } };
+$("btnStop").onclick = async () => { try { await api("POST", "/api/server/stop"); toast("stopping"); refresh(); } catch (e) { toast(e.message, true); } };
+$("btnNew").onclick = () => openEditor(null, null);
+$("btnCancel").onclick = () => $("editor").classList.add("hidden");
+$("btnSave").onclick = saveWorld;
+$("f_template").onchange = () => {
+  const t = TEMPLATES[$("f_template").value];
+  if (t) fillForm(t);
+};
+
+if (token()) showApp(); else showGate();
+</script>
+</body>
+</html>
