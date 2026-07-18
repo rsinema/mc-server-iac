@@ -47,11 +47,15 @@
 │   ├── __init__.py
 │   ├── controller.py        # Lambda handler
 │   └── requirements.txt
+├── world_manager/          # world-manager web UI Lambda (see docs/webui.md)
+│   ├── handler.py           # bearer-token JSON API + serves the SPA
+│   └── index.html           # single-file browser UI
 └── modules/
     ├── network/         # security group, EIP
     ├── compute/         # EC2 instance, IAM profile, user-data
     ├── storage/         # EBS volume, DLM snapshot policy
     ├── control/         # Lambda Function URL, Discord integration
+    ├── webui/           # world-manager Lambda + Function URL + token secret
     ├── dns/             # Cloudflare record
     └── monitoring/      # CloudWatch alarm, EventBridge, stop Lambda
 ```

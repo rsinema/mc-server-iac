@@ -3,8 +3,13 @@ data "aws_ami" "al2023_arm64" {
   owners      = ["amazon"]
 
   filter {
-    name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    name = "name"
+    # Must stay specific: a broad "al2023-ami-*-arm64" also matches the
+    # ECS-optimized ("al2023-ami-ecs-hvm-*") and minimal ("al2023-ami-minimal-*")
+    # variants, and with most_recent=true those can win — the ECS image ships
+    # amazon-ecs-init, which crash-loops an amazon/amazon-ecs-agent container
+    # with no cluster configured. Pin the standard base image + 6.1 kernel line.
+    values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
   }
 
   filter {
@@ -107,13 +112,17 @@ resource "aws_instance" "mc_server" {
 
   associate_public_ip_address = true
 
-  user_data = templatefile("${path.module}/scripts/compute_setup.sh.tpl", {
+  # gzip-compressed: the rendered cloud-config exceeds EC2's 16 KB plaintext
+  # user-data limit (the world-profile reconciler in run.sh added to it), so we
+  # submit it gzipped — cloud-init on AL2023 decompresses it automatically. This
+  # also leaves generous headroom for future user-data growth.
+  user_data_base64 = base64gzip(templatefile("${path.module}/scripts/compute_setup.sh.tpl", {
     server_name       = var.server_name
     minecraft_version = var.minecraft_version
     minecraft_memory  = var.minecraft_memory
     rcon_password     = var.rcon_password
     stats_bucket      = var.stats_bucket_name
-  })
+  }))
   user_data_replace_on_change = true
 
   tags = {

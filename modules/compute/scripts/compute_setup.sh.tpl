@@ -71,21 +71,144 @@ write_files:
           fi
       done
 
-      # Per-profile Minecraft version / Paper channel override. A profile may
-      # pin itself to a version its plugins support by dropping a profile.env
-      # file (KEY=value lines) in its dir — e.g. skyblock's BentoBox/BSkyBlock
-      # only support 26.1.x, while survival tracks the ${minecraft_version}
-      # server default. Recognized keys: MC_VERSION, PAPER_CHANNEL. Values are
-      # charset-guarded; anything absent or malformed falls back to the default.
-      # See docs/multi-world.md.
+      # Per-profile world definition. The server type, version, memory, plugins/
+      # mods and extra server.properties for a world live in an SSM JSON document
+      # at /${server_name}/stats/worlds/<name>, written by the world-manager web
+      # UI (see docs/webui.md). run.sh reconciles that document into the world dir
+      # on every cold start: it downloads declared artifacts to their exact paths
+      # (things itzg can't express, e.g. a BentoBox addon under
+      # plugins/BentoBox/addons/) and renders the rest into itzg env vars. The
+      # document is the source of truth; when it is absent we fall back to the
+      # legacy per-profile profile.env (MC_VERSION/PAPER_CHANNEL — see
+      # docs/multi-world.md) and then to the server defaults, so worlds
+      # provisioned before the UI keep working unchanged.
+      #
+      # Profile values become argv to `docker run` via a bash array (never eval'd
+      # or interpolated into a command string), so a malformed value cannot inject
+      # a shell command; values used in a URL or filesystem path are additionally
+      # scheme/charset-guarded below.
       MC_VERSION="${minecraft_version}"
       PAPER_CHANNEL_VALUE="experimental"
+      TYPE_VALUE="PAPER"
+      MEMORY_VALUE="${minecraft_memory}G"
+      # Container image. Defaults to the auto-Java itzg image; a world may pin a
+      # specific JDK (profile ".java") because some modpacks require an exact
+      # version — e.g. Cobblemon needs Java 21 and refuses to launch on a newer
+      # one. The pin maps to itzg's :java<N> image tag.
+      IMAGE="itzg/minecraft-server"
+      ENV_ARGS=()
+      # VERSION_EXPLICIT tracks whether a specific MC version was requested. It
+      # stays 0 for a modpack with no explicit version, so we let the pack pick
+      # its own MC version instead of forcing the server default (which would
+      # filter out every real pack build). MODPACK holds the .mrpack reference.
+      VERSION_EXPLICIT=0
+      MODPACK=""
+
       OVERRIDE="$${DIR}/profile.env"
       if [ -f "$${OVERRIDE}" ]; then
           V=$(sed -n 's/^MC_VERSION=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
           C=$(sed -n 's/^PAPER_CHANNEL=//p' "$${OVERRIDE}" | tail -1 | tr -d '\r')
-          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}" ;; esac
+          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}"; VERSION_EXPLICIT=1 ;; esac
           case "$${C}" in default|experimental) PAPER_CHANNEL_VALUE="$${C}" ;; esac
+      fi
+
+      PROFILE_JSON=$(aws ssm get-parameter \
+              --name "/${server_name}/stats/worlds/$${NAME}" \
+              --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+      if echo "$${PROFILE_JSON}" | jq -e . >/dev/null 2>&1; then
+          echo "Reconciling world profile document for '$${NAME}'"
+
+          # Server type / version / memory (each optional; charset-guarded, so a
+          # malformed value just falls back to the default computed above).
+          T=$(echo "$${PROFILE_JSON}" | jq -r '.type // empty')
+          case "$${T}" in ""|*[!A-Za-z]*) : ;; *) TYPE_VALUE="$${T}" ;; esac
+          V=$(echo "$${PROFILE_JSON}" | jq -r '.version // empty')
+          case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}"; VERSION_EXPLICIT=1 ;; esac
+          M=$(echo "$${PROFILE_JSON}" | jq -r '.memory_gb // empty')
+          case "$${M}" in ""|*[!0-9]*) : ;; *) MEMORY_VALUE="$${M}G" ;; esac
+          # Optional Java pin -> itzg :java<N> image tag (digits-guarded).
+          J=$(echo "$${PROFILE_JSON}" | jq -r '.java // empty')
+          case "$${J}" in ""|*[!0-9]*) : ;; *) IMAGE="itzg/minecraft-server:java$${J}" ;; esac
+
+          # Plugin / mod auto-download lists — itzg fetches these itself on boot.
+          SPIGET=$(echo "$${PROFILE_JSON}" | jq -r '.plugins.spiget // [] | join(",")')
+          PLUGIN_MODRINTH=$(echo "$${PROFILE_JSON}" | jq -r '.plugins.modrinth // [] | join(",")')
+          PLUGIN_URLS=$(echo "$${PROFILE_JSON}" | jq -r '.plugins.urls // [] | join(",")')
+          MOD_MODRINTH=$(echo "$${PROFILE_JSON}" | jq -r '.mods.modrinth // [] | join(",")')
+          MOD_CURSE=$(echo "$${PROFILE_JSON}" | jq -r '.mods.curseforge // [] | join(",")')
+          MOD_URLS=$(echo "$${PROFILE_JSON}" | jq -r '.mods.urls // [] | join(",")')
+          [ -n "$${SPIGET}" ] && ENV_ARGS+=( -e "SPIGET_RESOURCES=$${SPIGET}" )
+          # MODRINTH_PROJECTS is the itzg env for both plugins (Paper) and mods
+          # (Fabric/Forge); merge the two lists and strip stray commas.
+          MODRINTH_ALL=$(printf '%s,%s' "$${PLUGIN_MODRINTH}" "$${MOD_MODRINTH}" | sed 's/^,//; s/,$//')
+          [ -n "$${MODRINTH_ALL}" ] && ENV_ARGS+=( -e "MODRINTH_PROJECTS=$${MODRINTH_ALL}" )
+          [ -n "$${PLUGIN_URLS}" ] && ENV_ARGS+=( -e "PLUGINS=$${PLUGIN_URLS}" )
+          [ -n "$${MOD_CURSE}" ] && ENV_ARGS+=( -e "CURSEFORGE_FILES=$${MOD_CURSE}" )
+          [ -n "$${MOD_URLS}" ] && ENV_ARGS+=( -e "MODS=$${MOD_URLS}" )
+
+          # Modrinth modpack (.mrpack): the server runs the exact pack players
+          # install, so client mod versions match automatically. Forces
+          # TYPE=MODRINTH; loader + MC version come from the pack (so we skip the
+          # forced VERSION below unless the profile pinned one explicitly).
+          MODPACK=$(echo "$${PROFILE_JSON}" | jq -r '.mods.modpack // empty')
+          if [ -n "$${MODPACK}" ]; then
+              TYPE_VALUE="MODRINTH"
+              ENV_ARGS+=( -e "MODRINTH_MODPACK=$${MODPACK}" )
+          fi
+
+          # Auto-install transitive dependencies (Fabric API, architectury, …)
+          # for individually listed Modrinth mods — the usual "mod won't load"
+          # cause. Harmless for modpacks, which bundle their own dependencies.
+          if [ -n "$${MODRINTH_ALL}" ] || [ -n "$${MODPACK}" ]; then
+              ENV_ARGS+=( -e "MODRINTH_DOWNLOAD_DEPENDENCIES=required" )
+          fi
+
+          # Optional CurseForge API key (needed for CURSEFORGE_FILES downloads).
+          CF_KEY=$(echo "$${PROFILE_JSON}" | jq -r '.cf_api_key // empty')
+          [ -n "$${CF_KEY}" ] && ENV_ARGS+=( -e "CF_API_KEY=$${CF_KEY}" )
+
+          # Extra server.properties, mapped straight to itzg env vars (e.g.
+          # DIFFICULTY=normal, LEVEL_TYPE=...). Passed as literal argv entries.
+          while IFS= read -r kv; do
+              [ -n "$${kv}" ] && ENV_ARGS+=( -e "$${kv}" )
+          done < <(echo "$${PROFILE_JSON}" | jq -r '.properties // {} | to_entries[] | "\(.key)=\(.value)"')
+
+          # Explicit artifact placement for files itzg cannot express (plugin
+          # addons, loose config jars), declared as {url, dest}. Download only
+          # when missing (idempotent, self-healing across reboots). Guardrails:
+          # https only, and dest must be a clean relative path (no leading '/',
+          # no '..'). chown each created path component to the container uid
+          # (itzg runs the server as 1000) so the plugin can create its own
+          # data/config inside those dirs at runtime.
+          while IFS= read -r entry; do
+              [ -z "$${entry}" ] && continue
+              url=$(echo "$${entry}" | jq -r '.url // empty')
+              dest=$(echo "$${entry}" | jq -r '.dest // empty')
+              case "$${url}" in https://*) ;; *) echo "  skip file: bad url '$${url}'"; continue ;; esac
+              case "$${dest}" in ""|/*|*..*) echo "  skip file: bad dest '$${dest}'"; continue ;; esac
+              target="$${DIR}/$${dest}"
+              [ -f "$${target}" ] && continue
+              mkdir -p "$(dirname "$${target}")"
+              if curl -fsSL "$${url}" -o "$${target}.tmp"; then
+                  mv "$${target}.tmp" "$${target}"
+                  chown 1000:1000 "$${target}" 2>/dev/null || true
+                  d=$(dirname "$${target}")
+                  while [ "$${d}" != "$${DIR}" ] && [ "$${d}" != "/" ]; do
+                      chown 1000:1000 "$${d}" 2>/dev/null || true
+                      d=$(dirname "$${d}")
+                  done
+                  echo "  downloaded $${dest}"
+              else
+                  rm -f "$${target}.tmp"
+                  echo "  download FAILED: $${url}"
+              fi
+          done < <(echo "$${PROFILE_JSON}" | jq -c '.files // [] | .[]')
+      fi
+
+      # Force an explicit MC version for everything except a modpack that should
+      # pick its own (VERSION would otherwise filter out the pack's real builds).
+      if [ -z "$${MODPACK}" ] || [ "$${VERSION_EXPLICIT}" = "1" ]; then
+          ENV_ARGS+=( -e "VERSION=$${MC_VERSION}" )
       fi
 
       exec /usr/bin/docker run \
@@ -93,19 +216,19 @@ write_files:
           -v "$${DIR}:/data" \
           -v "$${SHARED}/whitelist.json:/data/whitelist.json" \
           -v "$${SHARED}/ops.json:/data/ops.json" \
-          -e TYPE=PAPER \
+          -e TYPE="$${TYPE_VALUE}" \
           -e PAPER_CHANNEL="$${PAPER_CHANNEL_VALUE}" \
-          -e VERSION="$${MC_VERSION}" \
-          -e MEMORY=${minecraft_memory}G \
+          -e MEMORY="$${MEMORY_VALUE}" \
           -e EULA=TRUE \
           -e ALLOW_FLIGHT=TRUE \
           -e ENABLE_RCON=true \
           -e RCON_PASSWORD=${rcon_password} \
           -e SERVER_PORT=25565 \
           -e ENFORCE_WHITELIST=TRUE \
+          "$${ENV_ARGS[@]}" \
           -p 25565:25565 \
           -p 25575:25575 \
-          itzg/minecraft-server
+          "$${IMAGE}"
 
   - path: /opt/mc-monitor/check_players.sh
     permissions: '0755'
@@ -271,8 +394,9 @@ runcmd:
     mkdir -p /opt/minecraft/worlds/survival
     cd /
 
-    # Install and enable Docker
-    dnf install -y docker
+    # Install and enable Docker. jq parses the per-world profile document that
+    # run.sh reconciles at container-start time (see docs/webui.md).
+    dnf install -y docker jq
     systemctl enable docker
     systemctl start docker
 
