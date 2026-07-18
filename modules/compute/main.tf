@@ -3,8 +3,13 @@ data "aws_ami" "al2023_arm64" {
   owners      = ["amazon"]
 
   filter {
-    name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    name = "name"
+    # Must stay specific: a broad "al2023-ami-*-arm64" also matches the
+    # ECS-optimized ("al2023-ami-ecs-hvm-*") and minimal ("al2023-ami-minimal-*")
+    # variants, and with most_recent=true those can win — the ECS image ships
+    # amazon-ecs-init, which crash-loops an amazon/amazon-ecs-agent container
+    # with no cluster configured. Pin the standard base image + 6.1 kernel line.
+    values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
   }
 
   filter {
