@@ -158,6 +158,8 @@
         <textarea id="f_mods_urls" rows="2"></textarea>
         <label>CurseForge API key (only if using CurseForge)</label>
         <input id="f_cf_api_key" type="password" />
+        <label>Java version (pin only if the pack requires it — e.g. Cobblemon needs 21)</label>
+        <input id="f_java" type="number" placeholder="21" />
       </details>
 
       <label>Notes</label>
@@ -305,7 +307,7 @@ const TEMPLATES = {
     mods: { modrinth: ["fabric-api"] },
     notes: "modded (fabric)" },
   cobblemon: {
-    type: "MODRINTH", memory_gb: 6,
+    type: "MODRINTH", memory_gb: 6, java: 21,
     mods: { modpack: "cobblemon-fabric" },
     notes: "Cobblemon (Fabric modpack)"
   },
@@ -326,6 +328,7 @@ function fillForm(p) {
   $("f_type").value = p.type || "PAPER";
   $("f_version").value = p.version || "";
   $("f_memory").value = p.memory_gb || "";
+  $("f_java").value = p.java || "";
   const pl = p.plugins || {}, md = p.mods || {};
   $("f_plugins_modrinth").value = (pl.modrinth || []).join(", ");
   $("f_plugins_spiget").value = (pl.spiget || []).join(", ");
@@ -352,6 +355,7 @@ function buildProfile() {
   const p = { type: $("f_type").value };
   if ($("f_version").value.trim()) p.version = $("f_version").value.trim();
   if ($("f_memory").value.trim()) p.memory_gb = parseInt($("f_memory").value, 10);
+  if ($("f_java").value.trim()) p.java = parseInt($("f_java").value, 10);
 
   const plugins = {};
   if (commaList("f_plugins_modrinth").length) plugins.modrinth = commaList("f_plugins_modrinth");

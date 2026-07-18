@@ -91,6 +91,11 @@ write_files:
       PAPER_CHANNEL_VALUE="experimental"
       TYPE_VALUE="PAPER"
       MEMORY_VALUE="${minecraft_memory}G"
+      # Container image. Defaults to the auto-Java itzg image; a world may pin a
+      # specific JDK (profile ".java") because some modpacks require an exact
+      # version — e.g. Cobblemon needs Java 21 and refuses to launch on a newer
+      # one. The pin maps to itzg's :java<N> image tag.
+      IMAGE="itzg/minecraft-server"
       ENV_ARGS=()
       # VERSION_EXPLICIT tracks whether a specific MC version was requested. It
       # stays 0 for a modpack with no explicit version, so we let the pack pick
@@ -121,6 +126,9 @@ write_files:
           case "$${V}" in ""|*[!a-zA-Z0-9._-]*) : ;; *) MC_VERSION="$${V}"; VERSION_EXPLICIT=1 ;; esac
           M=$(echo "$${PROFILE_JSON}" | jq -r '.memory_gb // empty')
           case "$${M}" in ""|*[!0-9]*) : ;; *) MEMORY_VALUE="$${M}G" ;; esac
+          # Optional Java pin -> itzg :java<N> image tag (digits-guarded).
+          J=$(echo "$${PROFILE_JSON}" | jq -r '.java // empty')
+          case "$${J}" in ""|*[!0-9]*) : ;; *) IMAGE="itzg/minecraft-server:java$${J}" ;; esac
 
           # Plugin / mod auto-download lists — itzg fetches these itself on boot.
           SPIGET=$(echo "$${PROFILE_JSON}" | jq -r '.plugins.spiget // [] | join(",")')
@@ -220,7 +228,7 @@ write_files:
           "$${ENV_ARGS[@]}" \
           -p 25565:25565 \
           -p 25575:25575 \
-          itzg/minecraft-server
+          "$${IMAGE}"
 
   - path: /opt/mc-monitor/check_players.sh
     permissions: '0755'

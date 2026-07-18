@@ -52,6 +52,8 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")
 # Modrinth project/version page URL. https URLs are validated separately.
 MODPACK_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PROP_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+# JDK versions itzg publishes as :java<N> image tags.
+ALLOWED_JAVA = {8, 11, 16, 17, 21, 25}
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -312,6 +314,19 @@ def validate_profile(profile) -> tuple[dict, str | None]:
         if not (1 <= mem_i <= 64):
             return {}, "memory_gb must be between 1 and 64"
         cleaned["memory_gb"] = mem_i
+
+    # Optional Java pin: some modpacks require an exact JDK (e.g. Cobblemon needs
+    # 21, while the default itzg image may run a newer one). Maps to the itzg
+    # image tag `:java<N>` in run.sh. Restricted to the JDKs itzg publishes.
+    java = profile.get("java")
+    if java not in (None, ""):
+        try:
+            java_i = int(java)
+        except (TypeError, ValueError):
+            return {}, "java must be an integer"
+        if java_i not in ALLOWED_JAVA:
+            return {}, f"java must be one of {', '.join(str(j) for j in sorted(ALLOWED_JAVA))}"
+        cleaned["java"] = java_i
 
     plugins_in = profile.get("plugins") or {}
     if not isinstance(plugins_in, dict):
