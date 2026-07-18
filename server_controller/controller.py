@@ -87,7 +87,9 @@ HELP_TEXT = (
     "Takes effect on the next `/mc start`.\n"
     "`/mc help` — this message.\n\n"
     "Only whitelisted Mojang usernames can join. If you can't connect, ask "
-    "someone in the server to run `/mc whitelist add user:<your_name>`."
+    "someone in the server to run `/mc whitelist add user:<your_name>`.\n"
+    "If the active world is **modded**, `/mc status` and `/mc start` show the "
+    "modpack you need to install (via the Modrinth App or Prism Launcher) to connect."
 )
 
 
@@ -411,14 +413,15 @@ def run_start(instance_id: str, caller_name: str = "Someone", webhook_url: str =
     # progress/errors). The public channel announcement is a separate webhook
     # post, fired only once the server is actually reachable.
     state = get_instance_state(instance_id)
+    hint = _connect_hint(_get_active_world())
     if state == "running":
         ip = get_instance_public_ip(instance_id)
         discord_webhook_notify(
             webhook_url,
             f"🎮 **{caller_name}** is hopping on — the Minecraft server is already up at "
-            f"`mc.rsinema.com:25565`. Come play!",
+            f"`mc.rsinema.com:25565`. Come play!" + hint,
         )
-        return f"Server is already running at `{ip}:25565`."
+        return f"Server is already running at `{ip}:25565`." + hint
 
     _ec2.start_instances(InstanceIds=[instance_id])
 
@@ -437,9 +440,9 @@ def run_start(instance_id: str, caller_name: str = "Someone", webhook_url: str =
             discord_webhook_notify(
                 webhook_url,
                 f"🎮 **{caller_name}** started the Minecraft server! Hop on at "
-                f"`mc.rsinema.com:25565` — give it ~30s for the world to finish loading.",
+                f"`mc.rsinema.com:25565` — give it ~30s for the world to finish loading." + hint,
             )
-            return f"Server is up at `{ip}:25565`! Give it ~30s for Minecraft to fully start."
+            return f"Server is up at `{ip}:25565`! Give it ~30s for Minecraft to fully start." + hint
 
     # Timed out before EC2 reported `running` — don't announce a server that
     # may not be reachable yet; the caller alone sees this hint.
@@ -459,12 +462,13 @@ def run_status(instance_id: str, rcon_password: str) -> str:
     state = get_instance_state(instance_id)
     world = _get_active_world()
     world_line = f"\nActive world: `{world}`" if world else ""
+    hint = _connect_hint(world)
     if state == "stopped":
-        return "Server is stopped. Use `/mc start` to spin it up." + world_line
+        return "Server is stopped. Use `/mc start` to spin it up." + world_line + hint
 
     ip = get_instance_public_ip(instance_id) or "pending"
     players = get_player_count(rcon_password, rcon_host=ip) if state == "running" and ip != "pending" else 0
-    return f"Server is running at `{ip}:25565`{world_line}\nPlayers online: {players}"
+    return f"Server is running at `{ip}:25565`{world_line}\nPlayers online: {players}" + hint
 
 
 def run_players(instance_id: str, rcon_password: str) -> str:
@@ -897,6 +901,50 @@ def _get_world_list() -> list[str]:
         logger.warning(f"Failed to read world list: {e}")
         return []
     return [w.strip() for w in raw.split(",") if w.strip()]
+
+
+# Player-facing "how to connect" hint for the active world. A modded world needs
+# a matching client, so /mc status and /mc start surface the modpack to install.
+# Reads the world's profile document (written by the world-manager web UI).
+MODDED_TYPES = {"FABRIC", "FORGE", "NEOFORGE", "QUILT", "MODRINTH"}
+
+
+def _get_world_profile(name: str) -> dict:
+    """The world's profile document (or {} if none/unreadable)."""
+    prefix = os.environ.get("WORLDS_PREFIX")
+    if not prefix or not name:
+        return {}
+    try:
+        raw = _ssm.get_parameter(Name=f"{prefix}{name}")["Parameter"]["Value"]
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning(f"Failed to read world profile for {name}: {e}")
+        return {}
+
+
+def _connect_hint(world: str) -> str:
+    """What client a player needs to join the active world (empty for vanilla)."""
+    profile = _get_world_profile(world)
+    if not profile:
+        return ""
+    mods = profile.get("mods") or {}
+    modpack = mods.get("modpack")
+    if modpack:
+        url = modpack if str(modpack).startswith("http") else f"https://modrinth.com/modpack/{modpack}"
+        name = profile.get("notes") or modpack
+        return (
+            "\n\n🎒 **Modded world — you need the modpack to join.**\n"
+            f"Install **{name}**: {url}\n"
+            "Open it in the **Modrinth App** (Browse → Install) or **Prism Launcher** "
+            "(Add Instance → Import from URL), launch that profile, then connect normally."
+        )
+    if str(profile.get("type", "")).upper() in MODDED_TYPES or mods:
+        loader = (profile.get("type") or "Fabric").title()
+        return (
+            f"\n\n🎒 **Modded world** — you need a matching **{loader}** client with the "
+            "server's mods installed. Ask an admin for the mod list."
+        )
+    return ""
 
 
 def run_world_list() -> str:

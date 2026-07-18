@@ -167,6 +167,16 @@ resource "aws_iam_policy" "controller_lambda" {
         ]
       },
       {
+        # Read per-world profile documents (written by the world-manager web UI)
+        # so /mc status and /mc start can tell players which modpack to install.
+        Sid    = "WorldProfilesRead"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter"
+        ]
+        Resource = replace(aws_ssm_parameter.active_world.arn, "/active-world", "/worlds/*")
+      },
+      {
         Sid    = "StatsBaselineSeed"
         Effect = "Allow"
         Action = [
@@ -211,6 +221,7 @@ resource "aws_lambda_function" "server_controller" {
       WAYPOINTS_PARAM                = aws_ssm_parameter.waypoints.name
       ACTIVE_WORLD_PARAM             = aws_ssm_parameter.active_world.name
       WORLD_LIST_PARAM               = aws_ssm_parameter.world_list.name
+      WORLDS_PREFIX                  = "/${var.server_name}/stats/worlds/"
     }
   }
 }
