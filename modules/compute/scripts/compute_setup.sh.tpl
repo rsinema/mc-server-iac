@@ -180,14 +180,14 @@ write_files:
               case "$${dest}" in ""|/*|*..*) echo "  skip file: bad dest '$${dest}'"; continue ;; esac
               target="$${DIR}/$${dest}"
               [ -f "$${target}" ] && continue
-              mkdir -p "$$(dirname "$${target}")"
+              mkdir -p "$(dirname "$${target}")"
               if curl -fsSL "$${url}" -o "$${target}.tmp"; then
                   mv "$${target}.tmp" "$${target}"
                   chown 1000:1000 "$${target}" 2>/dev/null || true
-                  d=$$(dirname "$${target}")
+                  d=$(dirname "$${target}")
                   while [ "$${d}" != "$${DIR}" ] && [ "$${d}" != "/" ]; do
                       chown 1000:1000 "$${d}" 2>/dev/null || true
-                      d=$$(dirname "$${d}")
+                      d=$(dirname "$${d}")
                   done
                   echo "  downloaded $${dest}"
               else
