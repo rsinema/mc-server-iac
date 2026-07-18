@@ -7,8 +7,16 @@ resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   period              = 60
   statistic           = "Maximum"
   threshold           = 1
-  treat_missing_data  = "notBreaching"
-  alarm_description   = "Triggers when PlayerCount is 0 for ${var.idle_stop_minutes} consecutive minutes"
+  # For an idle-stop, a MISSING datapoint should count toward stopping, not
+  # reset the streak. With "notBreaching", a single missing minute per 15-min
+  # window (normal publish jitter) kept the alarm from ever reaching 15/15, so
+  # an idle server ran indefinitely. "breaching" makes idle/flaky-metric periods
+  # accumulate to ALARM; a server with real players still publishes >=1 every
+  # minute, which breaks the streak, so active sessions are not stopped. On
+  # /mc start the controller resets this alarm to OK, so a fresh instance gets a
+  # full idle window before it can stop.
+  treat_missing_data = "breaching"
+  alarm_description  = "Triggers when PlayerCount is <1 (or unreported) for ${var.idle_stop_minutes} consecutive minutes"
 
   dimensions = {
     InstanceId = var.instance_id
