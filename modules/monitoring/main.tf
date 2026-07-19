@@ -1,22 +1,26 @@
 resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   alarm_name          = "${var.server_name}-idle-stop"
   comparison_operator = "LessThanThreshold"
-  evaluation_periods  = var.idle_stop_minutes
-  metric_name         = "PlayerCount"
-  namespace           = "Minecraft"
-  period              = 60
-  statistic           = "Maximum"
-  threshold           = 1
-  # For an idle-stop, a MISSING datapoint should count toward stopping, not
-  # reset the streak. With "notBreaching", a single missing minute per 15-min
-  # window (normal publish jitter) kept the alarm from ever reaching 15/15, so
-  # an idle server ran indefinitely. "breaching" makes idle/flaky-metric periods
-  # accumulate to ALARM; a server with real players still publishes >=1 every
-  # minute, which breaks the streak, so active sessions are not stopped. On
-  # /mc start the controller resets this alarm to OK, so a fresh instance gets a
-  # full idle window before it can stop.
-  treat_missing_data = "breaching"
-  alarm_description  = "Triggers when PlayerCount is <1 (or unreported) for ${var.idle_stop_minutes} consecutive minutes"
+  # Evaluate in 5-minute buckets rather than 1-minute ones. The player-count
+  # publisher occasionally skips a minute (timer jitter), and with 1-minute
+  # periods that lone gap kept a strict 15/15 alarm from ever firing. A 5-minute
+  # bucket still contains several datapoints, so per-minute jitter no longer
+  # matters; idle_stop_minutes is converted to bucket count.
+  evaluation_periods = ceil(var.idle_stop_minutes / 5)
+  metric_name        = "PlayerCount"
+  namespace          = "Minecraft"
+  period             = 300
+  statistic          = "Maximum"
+  threshold          = 1
+  # notBreaching is essential: a STOPPED server publishes nothing (missing),
+  # while an idle RUNNING server publishes 0. Only the running-and-0 case must
+  # trigger a stop. "breaching" here conflated the two and re-fired the alarm
+  # ~1 minute after every /mc start (the trailing window was still full of the
+  # stopped period's missing datapoints), killing the server right after boot.
+  # With notBreaching, missing periods are ignored, so a freshly started server
+  # gets a full idle window before it can stop.
+  treat_missing_data = "notBreaching"
+  alarm_description  = "Triggers when a running server reports 0 players for ~${var.idle_stop_minutes} min"
 
   dimensions = {
     InstanceId = var.instance_id
