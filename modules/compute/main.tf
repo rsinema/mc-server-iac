@@ -117,11 +117,13 @@ resource "aws_instance" "mc_server" {
   # submit it gzipped — cloud-init on AL2023 decompresses it automatically. This
   # also leaves generous headroom for future user-data growth.
   user_data_base64 = base64gzip(templatefile("${path.module}/scripts/compute_setup.sh.tpl", {
-    server_name       = var.server_name
-    minecraft_version = var.minecraft_version
-    minecraft_memory  = var.minecraft_memory
-    rcon_password     = var.rcon_password
-    stats_bucket      = var.stats_bucket_name
+    server_name         = var.server_name
+    minecraft_version   = var.minecraft_version
+    minecraft_memory    = var.minecraft_memory
+    rcon_password       = var.rcon_password
+    stats_bucket        = var.stats_bucket_name
+    idle_stop_minutes   = var.idle_stop_minutes
+    discord_webhook_url = var.discord_webhook_url
   }))
   user_data_replace_on_change = true
 
@@ -137,6 +139,15 @@ resource "aws_instance" "mc_server" {
       Name    = "${var.server_name}-root"
       Project = "mc-server"
     }
+  }
+
+  # Pin the AMI once launched. data.aws_ami.al2023_arm64 uses most_recent = true,
+  # so without this a newer AL2023 release would make every apply want to
+  # destroy/recreate the instance (reverting on-box state and forcing a rebuild)
+  # purely because of an upstream image bump. Intentional AMI upgrades are done
+  # by tainting/replacing the instance deliberately, not as apply side effects.
+  lifecycle {
+    ignore_changes = [ami]
   }
 }
 

@@ -234,17 +234,109 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
+      # Idle-stop agent. Runs every 60s via mc-monitor.timer and owns the whole
+      # idle decision locally instead of delegating it to a CloudWatch alarm.
+      # This box directly observes the live player count, so the decision is made
+      # where the state is — no metric that conflates "stopped" (no data) with
+      # "idle" (a real 0), and no edge-triggered alarm that has to be re-armed.
+      # Rules:
+      #   * a failed RCON read is UNKNOWN, never idle (server busy or booting);
+      #   * consecutive empty minutes live in a tmpfs counter that is 0 at every
+      #     boot, so a freshly started server can never inherit a stale idle
+      #     history and stop itself moments after boot; and
+      #   * only after IDLE_LIMIT minutes of *confirmed* emptiness do we stop.
+      # PlayerCount is still published for the CloudWatch backstop alarm (a
+      # 60-min catch-all for a dead/wedged agent) and for dashboards.
       TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
       INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-      RAW=$(docker exec minecraft rcon-cli list 2>/dev/null || true)
-      PLAYERS=$(echo "$RAW" | head -1 | grep -oE 'There are [0-9]+' | grep -oE '[0-9]+' || echo 0)
-      PLAYERS=$${PLAYERS:-0}
+
+      IDLE_LIMIT=${idle_stop_minutes}
+      STATE_DIR=/run/mc-monitor
+      STATE_FILE=$STATE_DIR/empty-minutes
+      SENTINEL=$STATE_DIR/stopping
+      mkdir -p "$STATE_DIR"
+
+      # Read the live player count via RCON. rcon-cli can transiently fail or
+      # time out while the server is busy (startup, chunk gen, GC pauses). A
+      # failed read must NOT be reported as 0 players: that looks like an idle
+      # server and could stop it while people are online (it also made the old
+      # alarm flap 0<->N). Retry a few times, accepting only a genuine
+      # "There are N ... players online" line.
+      PLAYERS=""
+      for attempt in 1 2 3; do
+          RAW=$(docker exec minecraft rcon-cli list 2>/dev/null || true)
+          N=$(echo "$RAW" | grep -oE 'There are [0-9]+' | head -1 | grep -oE '[0-9]+')
+          if [ -n "$N" ]; then PLAYERS="$N"; break; fi
+          sleep 2
+      done
+
+      # No valid reading after retries -> server up but RCON unreachable (still
+      # booting, or wedged). Treat this cycle as UNKNOWN: leave the counter
+      # untouched and publish nothing. It can neither accrue idle time nor emit a
+      # phantom 0. A genuinely dead agent is caught by the backstop alarm.
+      if [ -z "$PLAYERS" ]; then
+          echo "rcon list unavailable after retries; skipping this cycle"
+          exit 0
+      fi
+
+      # Publish for the backstop alarm + dashboards.
       aws cloudwatch put-metric-data \
           --namespace Minecraft \
           --metric-name PlayerCount \
           --value "$PLAYERS" \
           --unit Count \
           --dimensions InstanceId="$INSTANCE_ID"
+
+      # Any online player resets the idle counter; an empty reading advances it.
+      # The counter lives in tmpfs (/run), so it is 0 at every boot and only
+      # advances on confirmed-empty readings after RCON is answering. A full
+      # IDLE_LIMIT minutes of real emptiness is therefore always required before
+      # a stop, even immediately after a restart -- this is what structurally
+      # removes the old "stops right after start" race.
+      if [ "$PLAYERS" -gt 0 ]; then
+          echo 0 > "$STATE_FILE"
+          rm -f "$SENTINEL"
+          exit 0
+      fi
+
+      EMPTY=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+      case "$EMPTY" in ''|*[!0-9]*) EMPTY=0 ;; esac
+      EMPTY=$((EMPTY + 1))
+      echo "$EMPTY" > "$STATE_FILE"
+      echo "empty minutes: $EMPTY / $IDLE_LIMIT"
+
+      if [ "$EMPTY" -lt "$IDLE_LIMIT" ]; then
+          exit 0
+      fi
+
+      # Idle threshold reached -> graceful self-stop. The sentinel guards against
+      # a second overlapping timer cycle re-announcing/re-triggering the stop
+      # (belt-and-suspenders: once the container is stopped below, RCON fails and
+      # subsequent cycles exit at the UNKNOWN branch anyway).
+      if [ -f "$SENTINEL" ]; then
+          echo "stop already in progress"
+          exit 0
+      fi
+      touch "$SENTINEL"
+      echo "idle for $EMPTY min (>= $IDLE_LIMIT) -> stopping instance"
+
+      # Flush the world, then stop the service so its ExecStopPost pushes the
+      # final stats to S3 before the box goes down. Best-effort throughout.
+      docker exec minecraft rcon-cli save-all flush >/dev/null 2>&1 || true
+      systemctl stop minecraft || true
+
+      WEBHOOK="${discord_webhook_url}"
+      if [ -n "$WEBHOOK" ]; then
+          curl -s -X POST "$WEBHOOK" \
+              -H "Content-Type: application/json" \
+              -H "User-Agent: DiscordBot (https://github.com/rsinema/mc-server-iac, 1.0)" \
+              -d '{"content":"Server stopped — idle for '"$IDLE_LIMIT"' minutes. Use `/mc start` to resume.","allowed_mentions":{"parse":[]}}' \
+              >/dev/null 2>&1 || true
+      fi
+
+      # stop-instances is idempotent; scoped to this instance's Name tag by the
+      # instance role's EC2SelfStop policy.
+      aws ec2 stop-instances --instance-ids "$INSTANCE_ID" || true
 
   - path: /etc/systemd/system/mc-monitor.service
     permissions: '0644'
