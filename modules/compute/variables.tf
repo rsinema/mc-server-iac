@@ -54,6 +54,19 @@ variable "whitelist_seed" {
   default     = []
 }
 
+variable "idle_stop_minutes" {
+  description = "Minutes of confirmed zero players before the on-box idle agent stops the instance."
+  type        = number
+  default     = 15
+}
+
+variable "discord_webhook_url" {
+  description = "Discord webhook the on-box idle agent posts the auto-stop notice to. Empty disables the notice."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "stats_bucket_name" {
   description = "Name of the stats bucket the on-box mc-stats-sync timer pushes vanilla stat files into."
   type        = string

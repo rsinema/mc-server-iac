@@ -689,16 +689,40 @@ Or via Discord: `/mc start`, `/mc stop`
 
 ---
 
-## How to Test the Idle-Stop Path Without Waiting 15 Minutes
+## How Idle-Stop Works (Primary On-Box Agent + CloudWatch Backstop)
 
-The natural path requires 15 consecutive minutes of zero players. To force-exercise the EventBridge → Lambda → `ec2:StopInstances` wiring, flip the alarm state manually. **CloudWatch emits EventBridge events on state *transitions*, not on current state** — so if the alarm is already in `ALARM`, setting it to `ALARM` again is a no-op. Always flip to `OK` first:
+Idle-stop has two layers, deliberately split by responsibility:
+
+- **Primary — on-box agent** (`/opt/mc-monitor/check_players.sh`, from `modules/compute/scripts/compute_setup.sh.tpl`). The `mc-monitor.timer` runs it every 60s. It reads the live player count via RCON, publishes the `Minecraft/PlayerCount` metric, and maintains a consecutive-empty-minutes counter at `/run/mc-monitor/empty-minutes`. After `idle_stop_minutes` (default 15) of *confirmed* zero players it flushes the world, stops `minecraft.service` (whose `ExecStopPost` syncs stats to S3), optionally posts a Discord webhook notice, and calls `aws ec2 stop-instances` on itself (the instance role's `EC2SelfStop` grant). A **failed RCON read is UNKNOWN, never idle** — the counter isn't touched and nothing is published, so a busy/booting server can't stop itself. The counter lives in tmpfs, so it's **0 at every boot**: a freshly started server always needs a full idle window before it can stop, which is what removes the old "stops right after start" race.
+- **Backstop — CloudWatch alarm** (`modules/monitoring/main.tf`). `PlayerCount < 1`, `Maximum` over 5-min buckets, `backstop_minutes` (default 60) window, `treat_missing_data = "notBreaching"`. Its only job is to catch a box where the agent is alive and publishing zero-player readings but its self-stop path is broken, so it would otherwise bill forever. On ALARM, EventBridge invokes the controller Lambda with `{"action":"stop"}`. **`notBreaching` is essential:** missing data (booting, stopped, or a dead agent) must never push the alarm toward ALARM — treating missing as breaching makes CloudWatch back-fill the whole evaluation window the instant the alarm is created/modified with no data, which stops a freshly booted box within ~60s (this exact bug bit the first deploy). With `notBreaching` the alarm can only trip after a full window of *real* zero-player datapoints, and a fresh box always gets a clean window.
+
+### Testing the primary (on-box) path
+
+Watch the counter and the decision directly on the box via SSM:
+
+```bash
+# Tail the agent's per-minute log (empty-minute count, publish, stop decision)
+aws ssm start-session --target <instance-id>
+sudo journalctl -u mc-monitor.service -f
+cat /run/mc-monitor/empty-minutes    # current consecutive-empty-minute count
+
+# Fast-forward without waiting the full window: preload the counter to one shy
+# of the limit, then let the next empty cycle trip the stop.
+echo 14 | sudo tee /run/mc-monitor/empty-minutes
+```
+
+Any online player resets the counter to 0 on the next cycle, so join the server to confirm it never stops with players connected.
+
+### Testing the backstop (CloudWatch → Lambda) path
+
+To force-exercise the EventBridge → Lambda → `ec2:StopInstances` wiring without waiting an hour, flip the alarm state manually. **CloudWatch emits EventBridge events on state *transitions*, not on current state** — so if the alarm is already in `ALARM`, setting it to `ALARM` again is a no-op. Always flip to `OK` first:
 
 ```bash
 aws cloudwatch set-alarm-state --alarm-name MCServerInstance-idle-stop \
   --state-value OK --state-reason "pre-test reset"
 
 aws cloudwatch set-alarm-state --alarm-name MCServerInstance-idle-stop \
-  --state-value ALARM --state-reason "test idle-stop"
+  --state-value ALARM --state-reason "test idle-stop backstop"
 
 # Confirm EventBridge fired and Lambda ran:
 aws cloudwatch get-metric-statistics --namespace AWS/Events --metric-name Invocations \
@@ -830,7 +854,7 @@ Don't use bash heredocs inside a `runcmd: - |` block scalar — lines that start
 The vendored Python deps in `server_controller/` were built for the wrong platform (typically macOS instead of Linux arm64), so the C extension is missing. Rebuild them — see *How to Build / Rebuild the Lambda Dependencies*.
 
 ### Instance auto-stops immediately after `/mc start`
-If `treat_missing_data` on the alarm is `"breaching"`, the 15 minutes of missing data from when the instance was stopped stays in the evaluation window — and re-arming via `set_alarm_state(OK)` only lasts one evaluation period before the alarm flips back. The fix already applied: `treat_missing_data = "notBreaching"` in `modules/monitoring/main.tf`. Don't revert it without a plan.
+This was the original CloudWatch-driven design's core failure: idle-stop fired on the alarm's OK→ALARM *edge*, and `set_alarm_state(OK)` on start only held for one evaluation period before stale zero datapoints from the prior idle session flipped it back to ALARM within a minute or two. It's fixed structurally by making the **on-box agent** the primary decision-maker (`check_players.sh`): its empty-minute counter lives in tmpfs and is 0 at every boot, so there's no stale history to inherit and no alarm edge to re-arm. If you see early stops again, check the on-box agent first (`journalctl -u mc-monitor.service`, `cat /run/mc-monitor/empty-minutes`) — the CloudWatch alarm is now only a 60-min backstop and shouldn't be stopping a freshly started box at all.
 
 ### `set-alarm-state ALARM` doesn't fire EventBridge
 CloudWatch emits events on state *transitions*, not current state. Always set `OK` first, then `ALARM`, to force a transition.

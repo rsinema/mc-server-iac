@@ -1,26 +1,33 @@
 resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   alarm_name          = "${var.server_name}-idle-stop"
   comparison_operator = "LessThanThreshold"
-  # Evaluate in 5-minute buckets rather than 1-minute ones. The player-count
-  # publisher occasionally skips a minute (timer jitter), and with 1-minute
-  # periods that lone gap kept a strict 15/15 alarm from ever firing. A 5-minute
-  # bucket still contains several datapoints, so per-minute jitter no longer
-  # matters; idle_stop_minutes is converted to bucket count.
-  evaluation_periods = ceil(var.idle_stop_minutes / 5)
+  # BACKSTOP ONLY. The primary idle-stop decision now lives on the instance
+  # (modules/compute check_players.sh): the box watches the live player count
+  # and stops itself after ${var.idle_stop_minutes} min of confirmed emptiness.
+  # This alarm only catches the case where the agent is alive and publishing
+  # empty readings but fails to actually stop the box (e.g. its self-stop path
+  # is broken) -- a stuck box that would otherwise bill forever. The window is
+  # deliberately long (backstop_minutes) so it sits far outside any normal
+  # play/idle cycle; the fast, precise decision is the on-box agent's job.
+  evaluation_periods = ceil(var.backstop_minutes / 5)
   metric_name        = "PlayerCount"
   namespace          = "Minecraft"
   period             = 300
   statistic          = "Maximum"
   threshold          = 1
-  # notBreaching is essential: a STOPPED server publishes nothing (missing),
-  # while an idle RUNNING server publishes 0. Only the running-and-0 case must
-  # trigger a stop. "breaching" here conflated the two and re-fired the alarm
-  # ~1 minute after every /mc start (the trailing window was still full of the
-  # stopped period's missing datapoints), killing the server right after boot.
-  # With notBreaching, missing periods are ignored, so a freshly started server
-  # gets a full idle window before it can stop.
+  # "notBreaching" is critical here: MISSING data must NOT push the alarm toward
+  # ALARM. The metric is absent whenever the box is booting (RCON not up yet),
+  # stopped, or the agent is dead -- and treating any of those as breaching
+  # re-creates the original "stops seconds after boot" bug, because CloudWatch
+  # back-fills the whole evaluation range as breaching the instant the alarm is
+  # created/modified with no data. With notBreaching the alarm can only reach
+  # ALARM after ${var.backstop_minutes} min of *real* zero-player datapoints
+  # (a running, publishing, but non-self-stopping agent), and a freshly started
+  # box always gets a clean window. At a 60-min / 5-min-bucket / Maximum scale
+  # the per-minute publisher jitter that once made notBreaching flap is
+  # irrelevant, and the stop Lambda is idempotent (no-ops when not running).
   treat_missing_data = "notBreaching"
-  alarm_description  = "Triggers when a running server reports 0 players for ~${var.idle_stop_minutes} min"
+  alarm_description  = "BACKSTOP: fires only after ~${var.backstop_minutes} min of real zero-player datapoints (on-box agent alive but not self-stopping). Primary idle-stop is on-instance; missing data never trips this."
 
   dimensions = {
     InstanceId = var.instance_id

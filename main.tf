@@ -70,18 +70,20 @@ module "network" {
 module "compute" {
   source = "./modules/compute"
 
-  server_name       = var.server_name
-  instance_type     = var.instance_type
-  minecraft_version = var.minecraft_version
-  minecraft_memory  = var.minecraft_memory
-  minecraft_seed    = var.minecraft_seed
-  security_group_id = module.network.security_group_id
-  eip_allocation_id = module.network.eip_allocation_id
-  subnet_id         = data.aws_subnet.first.id
-  rcon_password     = random_password.rcon.result
-  whitelist_seed    = var.whitelist_seed
-  stats_bucket_name = module.stats.bucket_name
-  stats_bucket_arn  = module.stats.bucket_arn
+  server_name         = var.server_name
+  instance_type       = var.instance_type
+  minecraft_version   = var.minecraft_version
+  minecraft_memory    = var.minecraft_memory
+  minecraft_seed      = var.minecraft_seed
+  security_group_id   = module.network.security_group_id
+  eip_allocation_id   = module.network.eip_allocation_id
+  subnet_id           = data.aws_subnet.first.id
+  rcon_password       = random_password.rcon.result
+  whitelist_seed      = var.whitelist_seed
+  stats_bucket_name   = module.stats.bucket_name
+  stats_bucket_arn    = module.stats.bucket_arn
+  idle_stop_minutes   = var.idle_stop_minutes
+  discord_webhook_url = var.discord_webhook_url
 }
 
 # Storage module
